@@ -1,4 +1,17 @@
+<a href="https://keelinfra.io">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"
+            srcset="https://raw.githubusercontent.com/keelinfra/.github/main/assets/wordmark-dark.svg">
+    <img alt="keelinfra" width="280"
+         src="https://raw.githubusercontent.com/keelinfra/.github/main/assets/wordmark-light.svg">
+  </picture>
+</a>
+
 # Extended Security for Jenkins
+
+[![CI 2.541.x](https://github.com/keelinfra/jenkins-extended-security/actions/workflows/ci.yml/badge.svg?branch=stable-2.541)](https://github.com/keelinfra/jenkins-extended-security/actions/workflows/ci.yml?query=branch%3Astable-2.541)
+[![Lines](https://img.shields.io/badge/lines-2.541.x%20(Java%2017)-blue)](#lines)
+[![License: MIT, BSD-2-Clause parts](https://img.shields.io/badge/license-MIT%20%2B%20BSD--2--Clause%20parts-green)](#license)
 
 Jenkins core security fixes, backported to the last LTS line that runs on each Java version, for controllers that can't move to a newer Java yet.
 
