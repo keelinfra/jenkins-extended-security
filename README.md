@@ -2,7 +2,7 @@
 
 Patches that apply the core security fixes released after Jenkins 2.541.3 to 2.541.3, the last LTS that runs on Java 17, plus a script to build the WAR from them.
 
-> This is not an official Jenkins release. It is not covered by Jenkins security advisories, CVE assignments or the Jenkins security team. The way off 2.541.x is to [move to Java 21](https://www.jenkins.io/doc/book/platform-information/upgrade-java-guidelines/) and the current LTS; this only covers the time until you can.
+> This is not an official Jenkins release. It is not covered by Jenkins security advisories, CVE assignments or the Jenkins security team. The way off 2.541.x is to [move to Java 21](https://www.jenkins.io/doc/book/platform-information/upgrade-java-to-21/) and the current LTS; this only covers the time until you can.
 
 This is the 2.541.x line. The [main branch](../../tree/main) lists all lines.
 
