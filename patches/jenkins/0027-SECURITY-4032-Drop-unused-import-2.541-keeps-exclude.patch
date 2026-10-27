@@ -1,0 +1,29 @@
+From 7362cd372bca6b255689de88e68ec3cbfd193685 Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 08:41:36 +0000
+Subject: [PATCH 27/30] [SECURITY-4032] Drop unused import (2.541 keeps
+ excludeClientIPFromCrumb non-transient)
+
+Adaptation, not an upstream commit. Upstream c29adc67 imports
+XStreamDeserializable for DefaultCrumbIssuer.excludeClientIPFromCrumb. On 2.541
+that field is not transient and needs no annotation, so the import is unused.
+
+---
+ core/src/main/java/hudson/security/csrf/DefaultCrumbIssuer.java | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/core/src/main/java/hudson/security/csrf/DefaultCrumbIssuer.java b/core/src/main/java/hudson/security/csrf/DefaultCrumbIssuer.java
+index 7de8ea47fe..f701b17b25 100644
+--- a/core/src/main/java/hudson/security/csrf/DefaultCrumbIssuer.java
++++ b/core/src/main/java/hudson/security/csrf/DefaultCrumbIssuer.java
+@@ -21,7 +21,6 @@ import java.util.logging.Level;
+ import java.util.logging.Logger;
+ import jenkins.model.Jenkins;
+ import jenkins.security.HexStringConfidentialKey;
+-import jenkins.security.XStreamDeserializable;
+ import jenkins.security.XStreamNotDeserializable;
+ import jenkins.util.SystemProperties;
+ import net.sf.json.JSONObject;
+-- 
+2.43.0
+

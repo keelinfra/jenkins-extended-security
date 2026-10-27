@@ -1,0 +1,28 @@
+From bfd23d29f8826f85f2553a09a81e2bc7b9559f34 Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 08:42:41 +0000
+Subject: [PATCH 28/30] [SECURITY-3930] Add assumeFalse import missing on 2.541
+ test
+
+Adaptation, not an upstream commit. The test added by SECURITY-3930 uses
+assumeFalse, which the 2.541 version of this test class does not import.
+
+---
+ core/src/test/java/jenkins/security/Security3657Test.java | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/core/src/test/java/jenkins/security/Security3657Test.java b/core/src/test/java/jenkins/security/Security3657Test.java
+index 9f02f62d8a..c487772731 100644
+--- a/core/src/test/java/jenkins/security/Security3657Test.java
++++ b/core/src/test/java/jenkins/security/Security3657Test.java
+@@ -9,6 +9,7 @@ import static org.hamcrest.Matchers.is;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.junit.jupiter.api.Assumptions.assumeFalse;
+ 
+ import hudson.FilePath;
+ import hudson.Functions;
+-- 
+2.43.0
+

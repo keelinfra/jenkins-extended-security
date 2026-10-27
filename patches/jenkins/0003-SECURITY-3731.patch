@@ -1,0 +1,111 @@
+From 543037f1eaa912c7a808c082b04518692692c1d2 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Fri, 29 May 2026 07:39:08 +0000
+Subject: [PATCH 03/30] [SECURITY-3731]
+
+(cherry picked from commit 7c5fc12d3eee23177a516cfed8948345d1ddcb06)
+---
+ .../main/java/hudson/slaves/OfflineCause.java |  5 --
+ .../hudson/slaves/OfflineCause/cause.jelly    |  2 +-
+ .../jenkins/security/Security3669Test.java    | 49 +++++++++++++++++++
+ 3 files changed, 50 insertions(+), 6 deletions(-)
+
+diff --git a/core/src/main/java/hudson/slaves/OfflineCause.java b/core/src/main/java/hudson/slaves/OfflineCause.java
+index b88524a70a..7988fc3b31 100644
+--- a/core/src/main/java/hudson/slaves/OfflineCause.java
++++ b/core/src/main/java/hudson/slaves/OfflineCause.java
+@@ -203,11 +203,6 @@ public abstract class OfflineCause implements IOfflineCause {
+         public String getIcon() {
+             return "symbol-person";
+         }
+-
+-        @Override
+-        public String toString() {
+-            return Util.escape(super.toString());
+-        }
+     }
+ 
+     public static class ByCLI extends UserCause {
+diff --git a/core/src/main/resources/hudson/slaves/OfflineCause/cause.jelly b/core/src/main/resources/hudson/slaves/OfflineCause/cause.jelly
+index e2457c8ae2..19d0bc1f8e 100644
+--- a/core/src/main/resources/hudson/slaves/OfflineCause/cause.jelly
++++ b/core/src/main/resources/hudson/slaves/OfflineCause/cause.jelly
+@@ -29,7 +29,7 @@ THE SOFTWARE.
+       <i:formatDate value="${it.time}" type="both" dateStyle="medium" timeStyle="medium"/>
+     </div>
+     <div class="message">
+-      <j:out value="${it}" />
++      ${it}
+     </div>
+   </div>
+ </j:jelly>
+diff --git a/test/src/test/java/jenkins/security/Security3669Test.java b/test/src/test/java/jenkins/security/Security3669Test.java
+index 01bd388031..e8ec4141cf 100644
+--- a/test/src/test/java/jenkins/security/Security3669Test.java
++++ b/test/src/test/java/jenkins/security/Security3669Test.java
+@@ -15,6 +15,7 @@ import jenkins.model.Jenkins;
+ import org.htmlunit.html.HtmlFormUtil;
+ import org.htmlunit.html.HtmlPage;
+ import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
+ import org.jvnet.hudson.test.JenkinsRule;
+ import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
+ import org.jvnet.hudson.test.junit.jupiter.WithLocalData;
+@@ -104,6 +105,54 @@ public class Security3669Test {
+         }
+     }
+ 
++    @Test
++    @Issue("SECURITY-3731")
++    void postConfigXmlWithNonUserCause(JenkinsRule jenkinsRule) throws Exception {
++        final DumbSlave agent = jenkinsRule.createOnlineSlave();
++
++        String xml = "<?xml version='1.0' encoding='UTF-8'?>\n" +
++                "<slave>\n" +
++                "  <temporaryOfflineCause class=\"hudson.slaves.OfflineCause$SimpleOfflineCause\">\n" +
++                "    <description>\n" +
++                "      <holder>\n" +
++                "        <owner>hudson.slaves.Messages</owner>\n" +
++                "      </holder>\n" +
++                "      <key>SlaveComputer.DisconnectedBy</key>\n" +
++                "      <args>\n" +
++                "        <string>admin</string>\n" +
++                "        <string>&lt;img src=x onerror=alert(1)&gt;</string>\n" +
++                "      </args>\n" +
++                "    </description>\n" +
++                "  </temporaryOfflineCause>\n" +
++                "  <name>" + agent.getNodeName() + "</name>\n" +
++                "  <description></description>\n" +
++                "  <remoteFS>/tmp/foo</remoteFS>\n" +
++                "  <numExecutors>1</numExecutors>\n" +
++                "  <mode>NORMAL</mode>\n" +
++                "  <retentionStrategy class=\"hudson.slaves.RetentionStrategy$Always\"/>\n" +
++                "  <launcher class=\"hudson.slaves.JNLPLauncher\">\n" +
++                "    <workDirSettings>\n" +
++                "      <disabled>false</disabled>\n" +
++                "      <internalDir>remoting</internalDir>\n" +
++                "      <failIfWorkDirIsMissing>false</failIfWorkDirIsMissing>\n" +
++                "    </workDirSettings>\n" +
++                "    <webSocket>false</webSocket>\n" +
++                "  </launcher>\n" +
++                "  <label></label>\n" +
++                "  <nodeProperties/>\n" +
++                "</slave>";
++        agent.toComputer().updateByXml(new ByteArrayInputStream(xml.getBytes()));
++
++        try (JenkinsRule.WebClient webClient = jenkinsRule.createWebClient()) {
++            final HtmlPage nodePage = webClient.getPage(agent);
++            assertThat(
++                    nodePage.getWebResponse().getContentAsString(),
++                    allOf(
++                            not(containsString("<img src=x onerror=alert(1)>")),
++                            containsString("&lt;img src=x onerror=alert(1)>")));
++        }
++    }
++
+     @Test
+     @WithLocalData
+     void dataFromDisk(JenkinsRule jenkinsRule) throws Exception {
+-- 
+2.43.0
+

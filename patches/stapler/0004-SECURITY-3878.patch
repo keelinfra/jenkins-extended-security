@@ -1,0 +1,238 @@
+From 8fd7d8a0d59dd287825b3ee53ffc86b0f071f165 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 16:23:22 +0200
+Subject: [PATCH 4/4] SECURITY-3878
+
+(cherry picked from commit d7c3e58008a64c86373a0b1b0ade061c1c32167a)
+---
+ .../java/org/kohsuke/stapler/CrumbIssuer.java | 31 ++++++++++---------
+ .../main/java/org/kohsuke/stapler/WebApp.java |  3 +-
+ .../java/org/kohsuke/stapler/bind/Bound.java  |  4 +--
+ .../stapler/bind/JavaScriptProxyTest.java     |  6 ++--
+ .../interceptor/JsonOutputFilterTest.java     |  3 +-
+ .../kohsuke/stapler/test/JettyTestCase.java   | 26 ++++++++++++++++
+ .../kohsuke/stapler/jelly/BindTagTest.java    |  5 +++
+ .../stapler/jelly/BindTagTest/index.jelly     |  1 +
+ 8 files changed, 58 insertions(+), 21 deletions(-)
+
+diff --git a/core/src/main/java/org/kohsuke/stapler/CrumbIssuer.java b/core/src/main/java/org/kohsuke/stapler/CrumbIssuer.java
+index dc2b8b57..c1ee6a5f 100644
+--- a/core/src/main/java/org/kohsuke/stapler/CrumbIssuer.java
++++ b/core/src/main/java/org/kohsuke/stapler/CrumbIssuer.java
+@@ -1,8 +1,5 @@
+ package org.kohsuke.stapler;
+ 
+-import jakarta.servlet.http.HttpSession;
+-import java.util.UUID;
+-
+ /**
+  * Generates a nonce value that allows us to protect against cross-site request forgery (CSRF) attacks.
+  *
+@@ -43,6 +40,14 @@ public abstract class CrumbIssuer {
+         return issueCrumb(Stapler.getCurrentRequest2());
+     }
+ 
++    /**
++     * Returns the JavaScript expression that evaluates to the crumb value for the given request,
++     * for example, {@code document.head.dataset.crumbValue}.
++     *
++     * @return the JavaScript expression that evaluates to the crumb value for the given request. Never the crumb itself.
++     */
++    public abstract String getCrumbExpression();
++
+     /**
+      * Sends the crumb value in plain text, enabling retrieval through XmlHttpRequest.
+      */
+@@ -76,21 +81,17 @@ public abstract class CrumbIssuer {
+     }
+ 
+     /**
+-     * Default crumb issuer.
++     * No-op crumb issuer.
+      */
+-    public static final CrumbIssuer DEFAULT = new CrumbIssuer() {
++    public static final CrumbIssuer NONE = new CrumbIssuer() {
+         @Override
+         public String issueCrumb(StaplerRequest2 request) {
+-            HttpSession s = request.getSession();
+-            String v = (String) s.getAttribute(ATTRIBUTE_NAME);
+-            if (v != null) {
+-                return v;
+-            }
+-            v = UUID.randomUUID().toString();
+-            s.setAttribute(ATTRIBUTE_NAME, v);
+-            return v;
++            return "";
+         }
+-    };
+ 
+-    private static final String ATTRIBUTE_NAME = CrumbIssuer.class.getName();
++        @Override
++        public String getCrumbExpression() {
++            return "''";
++        }
++    };
+ }
+diff --git a/core/src/main/java/org/kohsuke/stapler/WebApp.java b/core/src/main/java/org/kohsuke/stapler/WebApp.java
+index 480fa8fb..14dd50dd 100644
+--- a/core/src/main/java/org/kohsuke/stapler/WebApp.java
++++ b/core/src/main/java/org/kohsuke/stapler/WebApp.java
+@@ -146,7 +146,8 @@ public class WebApp {
+ 
+     private final CopyOnWriteArrayList<HttpResponseRenderer> responseRenderers = new CopyOnWriteArrayList<>();
+ 
+-    private CrumbIssuer crumbIssuer = CrumbIssuer.DEFAULT;
++    /** By default, CSRF protection is disabled since TODO as the crumb issuer requires additional configuration now. */
++    private CrumbIssuer crumbIssuer = CrumbIssuer.NONE;
+ 
+     /**
+      * Provides access to {@link Stapler} servlet instances. This is useful
+diff --git a/core/src/main/java/org/kohsuke/stapler/bind/Bound.java b/core/src/main/java/org/kohsuke/stapler/bind/Bound.java
+index fabbef65..e2dd7332 100644
+--- a/core/src/main/java/org/kohsuke/stapler/bind/Bound.java
++++ b/core/src/main/java/org/kohsuke/stapler/bind/Bound.java
+@@ -136,12 +136,12 @@ public abstract class Bound implements HttpResponse {
+      * @return the Stapler proxy script for the specified URL and method names
+      */
+     public static String getProxyScript(String url, String[] methods) {
+-        final String crumb = WebApp.getCurrent().getCrumbIssuer().issueCrumb();
++        final String crumb = WebApp.getCurrent().getCrumbIssuer().getCrumbExpression();
+         final String methodNamesList = Arrays.stream(methods)
+                 .sorted()
+                 .map(it -> "'" + escapeQuotedString(it) + "'")
+                 .collect(Collectors.joining(","));
+-        return "makeStaplerProxy('" + escapeQuotedString(url) + "','" + crumb + "',[" + methodNamesList + "])";
++        return "makeStaplerProxy('" + escapeQuotedString(url) + "'," + crumb + ",[" + methodNamesList + "])";
+     }
+ 
+     private static String escapeQuotedString(String singleQuotedJsValue) {
+diff --git a/core/src/test/java/org/kohsuke/stapler/bind/JavaScriptProxyTest.java b/core/src/test/java/org/kohsuke/stapler/bind/JavaScriptProxyTest.java
+index 17815c04..c78058c6 100644
+--- a/core/src/test/java/org/kohsuke/stapler/bind/JavaScriptProxyTest.java
++++ b/core/src/test/java/org/kohsuke/stapler/bind/JavaScriptProxyTest.java
+@@ -76,7 +76,8 @@ public class JavaScriptProxyTest extends JettyTestCase {
+         rsp.setContentType("text/html");
+         String crumb = req.getWebApp().getCrumbIssuer().issueCrumb();
+         PrintWriter w = rsp.getWriter();
+-        w.println("<html><body><script src='script'></script>");
++        w.println("<html><head data-crumb-value='"
++                + WebApp.getCurrent().getCrumbIssuer().issueCrumb() + "'></head><body><script src='script'></script>");
+         w.println(
+                 "<script>var v = makeStaplerProxy('/','" + crumb
+                         + "',['foo','bar']);var callback = function(t){var x=t.responseObject();alert(typeof(x)+':'+x)};</script>");
+@@ -86,7 +87,8 @@ public class JavaScriptProxyTest extends JettyTestCase {
+     public void doBindAnonymous(StaplerResponse2 rsp) throws IOException {
+         rsp.setContentType("text/html");
+         PrintWriter w = rsp.getWriter();
+-        w.println("<html><body><script src='script'></script>");
++        w.println("<html><head data-crumb-value='"
++                + WebApp.getCurrent().getCrumbIssuer().issueCrumb() + "'></head><body><script src='script'></script>");
+         w.println("<script>var v = "
+                 + WebApp.getCurrent().boundObjectTable.bind(anonymous).getProxyScript() + ";</script>");
+         w.println("</body></html>");
+diff --git a/core/src/test/java/org/kohsuke/stapler/interceptor/JsonOutputFilterTest.java b/core/src/test/java/org/kohsuke/stapler/interceptor/JsonOutputFilterTest.java
+index 9293bdb2..389060fa 100644
+--- a/core/src/test/java/org/kohsuke/stapler/interceptor/JsonOutputFilterTest.java
++++ b/core/src/test/java/org/kohsuke/stapler/interceptor/JsonOutputFilterTest.java
+@@ -117,7 +117,8 @@ public class JsonOutputFilterTest extends JettyTestCase {
+     public void doIndex(StaplerResponse2 rsp) throws IOException {
+         rsp.setContentType("text/html");
+         PrintWriter w = rsp.getWriter();
+-        w.println("<html><body><script src='script'></script>");
++        w.println("<html><head data-crumb-value='"
++                + WebApp.getCurrent().getCrumbIssuer().issueCrumb() + "'></head><body><script src='script'></script>");
+         w.println("<script>var v = "
+                 + WebApp.getCurrent().boundObjectTable.bind(this).getProxyScript() + ";</script>");
+         w.println("<script>var callback = function(t){var x=t.responseObject(); alert(JSON.stringify(x)); };</script>");
+diff --git a/core/src/test/java/org/kohsuke/stapler/test/JettyTestCase.java b/core/src/test/java/org/kohsuke/stapler/test/JettyTestCase.java
+index 9b32c3b6..fe1d0ebd 100644
+--- a/core/src/test/java/org/kohsuke/stapler/test/JettyTestCase.java
++++ b/core/src/test/java/org/kohsuke/stapler/test/JettyTestCase.java
+@@ -1,11 +1,13 @@
+ package org.kohsuke.stapler.test;
+ 
+ import jakarta.servlet.ServletContext;
++import jakarta.servlet.http.HttpSession;
+ import java.io.BufferedReader;
+ import java.io.IOException;
+ import java.io.InputStreamReader;
+ import java.net.URL;
+ import java.nio.charset.Charset;
++import java.util.UUID;
+ import junit.framework.TestCase;
+ import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
+ import org.eclipse.jetty.ee9.servlet.ServletHolder;
+@@ -16,7 +18,9 @@ import org.eclipse.jetty.server.HttpConnectionFactory;
+ import org.eclipse.jetty.server.Server;
+ import org.eclipse.jetty.server.ServerConnector;
+ import org.htmlunit.WebClient;
++import org.kohsuke.stapler.CrumbIssuer;
+ import org.kohsuke.stapler.Stapler;
++import org.kohsuke.stapler.StaplerRequest2;
+ import org.kohsuke.stapler.WebApp;
+ 
+ /**
+@@ -39,6 +43,27 @@ public abstract class JettyTestCase extends TestCase {
+     protected ServletContext servletContext;
+     protected WebApp webApp;
+ 
++    private static final String ATTRIBUTE_NAME = JettyTestCase.class.getName() + ".CRUMB_ISSUER";
++
++    protected static final CrumbIssuer CRUMB_ISSUER = new CrumbIssuer() {
++        @Override
++        public String issueCrumb(StaplerRequest2 request) {
++            HttpSession s = request.getSession();
++            String v = (String) s.getAttribute(ATTRIBUTE_NAME);
++            if (v != null) {
++                return v;
++            }
++            v = UUID.randomUUID().toString();
++            s.setAttribute(ATTRIBUTE_NAME, v);
++            return v;
++        }
++
++        @Override
++        public String getCrumbExpression() {
++            return "document.head.dataset.crumbValue";
++        }
++    };
++
+     @Override
+     protected void setUp() throws Exception {
+         super.setUp();
+@@ -62,6 +87,7 @@ public abstract class JettyTestCase extends TestCase {
+ 
+         servletContext = context.getServletContext();
+         webApp = WebApp.get(servletContext);
++        webApp.setCrumbIssuer(CRUMB_ISSUER);
+ 
+         // export the test object as the root as a reasonable default.
+         webApp.setApp(this);
+diff --git a/jelly/src/test/java/org/kohsuke/stapler/jelly/BindTagTest.java b/jelly/src/test/java/org/kohsuke/stapler/jelly/BindTagTest.java
+index ae36235a..437dc0a8 100644
+--- a/jelly/src/test/java/org/kohsuke/stapler/jelly/BindTagTest.java
++++ b/jelly/src/test/java/org/kohsuke/stapler/jelly/BindTagTest.java
+@@ -37,4 +37,9 @@ public class BindTagTest extends JettyTestCase {
+         this.value = arg;
+         this.number = arg2;
+     }
++
++    /* index.jelly */
++    public String getCrumbValue() {
++        return webApp.getCrumbIssuer().issueCrumb();
++    }
+ }
+diff --git a/jelly/src/test/resources/org/kohsuke/stapler/jelly/BindTagTest/index.jelly b/jelly/src/test/resources/org/kohsuke/stapler/jelly/BindTagTest/index.jelly
+index 5d26ebc3..bf3c2664 100644
+--- a/jelly/src/test/resources/org/kohsuke/stapler/jelly/BindTagTest/index.jelly
++++ b/jelly/src/test/resources/org/kohsuke/stapler/jelly/BindTagTest/index.jelly
+@@ -1,5 +1,6 @@
+ <j:jelly xmlns:st="jelly:stapler" xmlns:j="jelly:core">
+   <html>
++    <head data-crumb-value="${it.crumbValue}"/>
+     <body>
+       <st:bind var="v" value="${it}"/>
+     </body>
+-- 
+2.43.0
+

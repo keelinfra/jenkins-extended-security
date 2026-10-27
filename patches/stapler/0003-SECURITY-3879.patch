@@ -1,0 +1,132 @@
+From 44733a246fe8dab0d83d8428affedeb385a7ad5e Mon Sep 17 00:00:00 2001
+From: Kevin-CB <kguerroudj@cloudbees.com>
+Date: Tue, 18 Aug 2026 16:22:37 +0200
+Subject: [PATCH 3/4] SECURITY-3879
+
+(cherry picked from commit 72e7fba79c9e77b7379498eafe7ddeeff15f09c2)
+---
+ .../stapler/export/JSONDataWriter.java        | 12 ++--
+ .../stapler/export/RubyDataWriter.java        |  2 +-
+ .../stapler/export/RubyDataWriterTest.java    | 58 +++++++++++++++++++
+ 3 files changed, 66 insertions(+), 6 deletions(-)
+ create mode 100644 core/src/test/java/org/kohsuke/stapler/export/RubyDataWriterTest.java
+
+diff --git a/core/src/main/java/org/kohsuke/stapler/export/JSONDataWriter.java b/core/src/main/java/org/kohsuke/stapler/export/JSONDataWriter.java
+index 96fb55f5..e58d7405 100644
+--- a/core/src/main/java/org/kohsuke/stapler/export/JSONDataWriter.java
++++ b/core/src/main/java/org/kohsuke/stapler/export/JSONDataWriter.java
+@@ -57,9 +57,9 @@ class JSONDataWriter implements DataWriter {
+     public void name(String name) throws IOException {
+         comma();
+         if (indent < 0) {
+-            out.write('"' + name + "\":");
++            out.write('"' + escape(name) + "\":");
+         } else {
+-            out.write('"' + name + "\" : ");
++            out.write('"' + escape(name) + "\" : ");
+         }
+         needComma = false;
+     }
+@@ -112,8 +112,11 @@ class JSONDataWriter implements DataWriter {
+ 
+     @Override
+     public void value(String v) throws IOException {
++        data('"' + escape(v) + '"');
++    }
++
++    protected static String escape(String v) {
+         StringBuilder buf = new StringBuilder(v.length());
+-        buf.append('\"');
+         for (int i = 0; i < v.length(); i++) {
+             char c = v.charAt(i);
+             if (Character.isISOControl(c) || Character.isHighSurrogate(c) || Character.isLowSurrogate(c)) {
+@@ -149,8 +152,7 @@ class JSONDataWriter implements DataWriter {
+                 }
+             }
+         }
+-        buf.append('\"');
+-        data(buf.toString());
++        return buf.toString();
+     }
+ 
+     @Override
+diff --git a/core/src/main/java/org/kohsuke/stapler/export/RubyDataWriter.java b/core/src/main/java/org/kohsuke/stapler/export/RubyDataWriter.java
+index 05c740d2..f04faee3 100644
+--- a/core/src/main/java/org/kohsuke/stapler/export/RubyDataWriter.java
++++ b/core/src/main/java/org/kohsuke/stapler/export/RubyDataWriter.java
+@@ -44,7 +44,7 @@ final class RubyDataWriter extends JSONDataWriter {
+     @Override
+     public void name(String name) throws IOException {
+         comma();
+-        out.write('"' + name + "\" => ");
++        out.write('"' + escape(name) + "\" => ");
+         needComma = false;
+     }
+ 
+diff --git a/core/src/test/java/org/kohsuke/stapler/export/RubyDataWriterTest.java b/core/src/test/java/org/kohsuke/stapler/export/RubyDataWriterTest.java
+new file mode 100644
+index 00000000..782d3a2f
+--- /dev/null
++++ b/core/src/test/java/org/kohsuke/stapler/export/RubyDataWriterTest.java
+@@ -0,0 +1,58 @@
++package org.kohsuke.stapler.export;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.not;
++
++import java.io.IOException;
++import java.io.StringWriter;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import org.junit.jupiter.api.Test;
++
++class RubyDataWriterTest {
++
++    private ExportConfig config = new ExportConfig().withFlavor(Flavor.RUBY);
++
++    private <T> String serialize(T bean, Class<T> clazz) throws IOException {
++        StringWriter w = new StringWriter();
++        Model<T> model = new ModelBuilder().get(clazz);
++        model.writeTo(bean, Flavor.RUBY.createDataWriter(bean, w, config));
++        return w.toString();
++    }
++
++    static final String CRAFTED_KEY = "escape\":\"pwned\",\"injected";
++
++    @ExportedBean
++    public static class MapHolder {
++        @Exported
++        public final Map<String, String> envVars;
++
++        MapHolder(String key, String value) {
++            envVars = new LinkedHashMap<>();
++            envVars.put(key, value);
++        }
++    }
++
++    @Test
++    void mapKeyIsEscaped() throws Exception {
++        String ruby = serialize(new MapHolder(CRAFTED_KEY, "value"), MapHolder.class);
++
++        assertThat(ruby, containsString("\\\""));
++        assertThat(ruby, not(containsString("\"pwned\",\"injected\" => ")));
++    }
++
++    @Test
++    void craftedKeyRendersAsSingleEscapedEntry() throws Exception {
++        String ruby = serialize(new MapHolder(CRAFTED_KEY, "value"), MapHolder.class);
++
++        assertThat(ruby, containsString("\"escape\\\":\\\"pwned\\\",\\\"injected\" => \"value\""));
++    }
++
++    @Test
++    void ordinaryMapEntryIsUnchanged() throws Exception {
++        String ruby = serialize(new MapHolder("foo", "bar"), MapHolder.class);
++
++        assertThat(ruby, containsString("\"foo\" => \"bar\""));
++    }
++}
+-- 
+2.43.0
+

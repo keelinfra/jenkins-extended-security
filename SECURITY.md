@@ -7,6 +7,6 @@
 
 ## What is covered
 
-Only the Jenkins core, Remoting and Stapler fixes listed in each line's COVERAGE.md (2.541.x: [COVERAGE.md](../../blob/stable-2.541/COVERAGE.md)). Plugins are not covered.
+Only the Jenkins core, Remoting and Stapler fixes listed in [COVERAGE.md](COVERAGE.md). Plugins are not covered.
 
 These builds are not part of Jenkins security advisories or CVE assignments, and the Jenkins security team does not review them.

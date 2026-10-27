@@ -1,0 +1,254 @@
+From 8a0e3d1300cebbcc7c0c524bb95d01b9d9859f86 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 10:21:16 +0000
+Subject: [PATCH 19/30] [SECURITY-3908]
+
+(cherry picked from commit e7a5ee1107cd5158c23c6de6e476385c5e9af9b6)
+---
+ core/src/main/java/hudson/model/User.java     | 14 ++++---
+ .../main/java/hudson/model/UserIdMapper.java  |  2 +-
+ .../hudson/model/ComputerSessionTest.java     | 37 ++++++++++++++++++
+ .../test/java/hudson/model/ComputerTest.java  |  8 ----
+ .../jenkins/security/Security3972Test.java    | 39 +++++++++++++++++++
+ .../config.xml                                |  0
+ .../nodes/deserialized/config.xml             |  0
+ .../users/username/config.xml                 |  0
+ 8 files changed, 86 insertions(+), 14 deletions(-)
+ create mode 100644 test/src/test/java/hudson/model/ComputerSessionTest.java
+ rename test/src/test/resources/hudson/model/{ComputerTest/removeUserDetailsFromOfflineCause => ComputerSessionTest/failToLoadNodeWithSerializedUserCause}/config.xml (100%)
+ rename test/src/test/resources/hudson/model/{ComputerTest/removeUserDetailsFromOfflineCause => ComputerSessionTest/failToLoadNodeWithSerializedUserCause}/nodes/deserialized/config.xml (100%)
+ rename test/src/test/resources/hudson/model/{ComputerTest/removeUserDetailsFromOfflineCause => ComputerSessionTest/failToLoadNodeWithSerializedUserCause}/users/username/config.xml (100%)
+
+diff --git a/core/src/main/java/hudson/model/User.java b/core/src/main/java/hudson/model/User.java
+index d6b0a4a25c..e127b83523 100644
+--- a/core/src/main/java/hudson/model/User.java
++++ b/core/src/main/java/hudson/model/User.java
+@@ -124,7 +124,7 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
+  * @author Kohsuke Kawaguchi
+  */
+ @ExportedBean
+-public class User extends AbstractModelObject implements AccessControlled, DescriptorByNameOwner, Loadable, Saveable, Comparable<User>, ModelObjectWithContextMenu, StaplerProxy {
++public class User extends AbstractModelObject implements AccessControlled, DescriptorByNameOwner, Loadable, Saveable, Comparable<User>, ModelObjectWithContextMenu, StaplerProxy, PersistenceRoot {
+ 
+     public static final XStream2 XSTREAM = new XStream2();
+     private static final Logger LOGGER = Logger.getLogger(User.class.getName());
+@@ -718,7 +718,7 @@ public class User extends AbstractModelObject implements AccessControlled, Descr
+             or greater issues in the realm change, could affect currently logged
+             in users and even the user making the change. */
+         try {
+-            var subdirectories = getRootDir().listFiles();
++            var subdirectories = getUsersDirectory().listFiles();
+             if (subdirectories != null) {
+                 for (var oldDirectory : subdirectories) {
+                     var dirName = oldDirectory.getName();
+@@ -834,10 +834,14 @@ public class User extends AbstractModelObject implements AccessControlled, Descr
+     /**
+      * Gets the directory where Hudson stores user information.
+      */
+-    static File getRootDir() {
++    static File getUsersDirectory() {
+         return new File(Jenkins.get().getRootDir(), "users");
+     }
+ 
++    public File getRootDir() {
++        return getUserFolderFor(id);
++    }
++
+     private static final int PREFIX_MAX = 14;
+     private static final Pattern DISALLOWED_PREFIX_CHARS = Pattern.compile("[^A-Za-z0-9]");
+     static final Pattern HASHED_DIRNAMES = Pattern.compile("[a-z0-9]{0," + PREFIX_MAX + "}_[a-f0-9]{64}");
+@@ -850,7 +854,7 @@ public class User extends AbstractModelObject implements AccessControlled, Descr
+ 
+     @SuppressFBWarnings(value = "PATH_TRAVERSAL_IN", justification = "sanitized")
+     static File getUserFolderFor(String id) {
+-        return new File(getRootDir(), getUserFolderNameFor(id));
++        return new File(getUsersDirectory(), getUserFolderNameFor(id));
+     }
+ 
+     /**
+@@ -1118,7 +1122,7 @@ public class User extends AbstractModelObject implements AccessControlled, Descr
+             DIRNAMES.createMac(); // force the key to be saved during startup
+             var instance = getInstance();
+             instance.migrateUserIdMapper();
+-            var subdirectories = getRootDir().listFiles();
++            var subdirectories = getUsersDirectory().listFiles();
+             if (subdirectories == null) {
+                 return;
+             }
+diff --git a/core/src/main/java/hudson/model/UserIdMapper.java b/core/src/main/java/hudson/model/UserIdMapper.java
+index 9c93d63f81..536d718e25 100644
+--- a/core/src/main/java/hudson/model/UserIdMapper.java
++++ b/core/src/main/java/hudson/model/UserIdMapper.java
+@@ -58,7 +58,7 @@ public class UserIdMapper {
+     @SuppressWarnings("deprecation")
+     static void migrate() throws IOException {
+         var idStrategy = User.idStrategy();
+-        var usersDirectory = User.getRootDir();
++        var usersDirectory = User.getUsersDirectory();
+         var data = new UserIdMapper();
+         var mapperXml = new XmlFile(XSTREAM, new File(usersDirectory, "users.xml"));
+         if (mapperXml.exists()) { // need to migrate
+diff --git a/test/src/test/java/hudson/model/ComputerSessionTest.java b/test/src/test/java/hudson/model/ComputerSessionTest.java
+new file mode 100644
+index 0000000000..56e34fb552
+--- /dev/null
++++ b/test/src/test/java/hudson/model/ComputerSessionTest.java
+@@ -0,0 +1,37 @@
++package hudson.model;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.hasProperty;
++import static org.hamcrest.Matchers.nullValue;
++
++import java.util.logging.Level;
++import jenkins.model.Nodes;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.RegisterExtension;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.LogRecorder;
++import org.jvnet.hudson.test.junit.jupiter.JenkinsSessionExtension;
++import org.jvnet.hudson.test.recipes.LocalData;
++
++class ComputerSessionTest {
++    @RegisterExtension
++    JenkinsSessionExtension j = new JenkinsSessionExtension();
++
++    @Issue({"SECURITY-362", "SECURITY-3908", "SECURITY-3972"})
++    @Test
++    @LocalData
++    void failToLoadNodeWithSerializedUserCause() throws Throwable {
++        try (LogRecorder recorder = new LogRecorder().record(Nodes.class, Level.WARNING).capture(5)) {
++            j.then(j -> {
++                assertThat(j.jenkins.getComputer("deserialized"), nullValue());
++            });
++            assertThat(recorder, LogRecorder.recorded(
++                    containsString("could not load"),
++                    hasProperty("cause",
++                            hasProperty("message",
++                                    containsString("Refusing to unmarshal PersistenceRoot subtype 'hudson.model.User' into field 'user' in 'hudson.slaves.OfflineCause$UserCause'. " +
++                                            "PersistenceRoot objects are document roots and must not appear as nested field values.")))));
++        }
++    }
++}
+diff --git a/test/src/test/java/hudson/model/ComputerTest.java b/test/src/test/java/hudson/model/ComputerTest.java
+index df63c9635e..fa3a63e15a 100644
+--- a/test/src/test/java/hudson/model/ComputerTest.java
++++ b/test/src/test/java/hudson/model/ComputerTest.java
+@@ -76,7 +76,6 @@ import org.jvnet.hudson.test.MemoryAssert;
+ import org.jvnet.hudson.test.MockAuthorizationStrategy;
+ import org.jvnet.hudson.test.MockFolder;
+ import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
+-import org.jvnet.hudson.test.recipes.LocalData;
+ 
+ @Tag("SmokeTest")
+ @WithJenkins
+@@ -172,13 +171,6 @@ class ComputerTest {
+         assertThat(agent.getTemporaryOfflineCause(), equalTo(offlineCause));
+     }
+ 
+-    @Test
+-    @LocalData
+-    void removeUserDetailsFromOfflineCause() throws Exception {
+-        Computer computer = j.jenkins.getComputer("deserialized");
+-        verifyOfflineCause(computer);
+-    }
+-
+     private void verifyOfflineCause(Computer computer) throws Exception {
+         XmlPage page = j.createWebClient().goToXml("computer/" + computer.getName() + "/config.xml");
+         String content = page.getWebResponse().getContentAsString(StandardCharsets.UTF_8);
+diff --git a/test/src/test/java/jenkins/security/Security3972Test.java b/test/src/test/java/jenkins/security/Security3972Test.java
+index 8f610eec22..2ae9abc88d 100644
+--- a/test/src/test/java/jenkins/security/Security3972Test.java
++++ b/test/src/test/java/jenkins/security/Security3972Test.java
+@@ -6,6 +6,7 @@ import static org.hamcrest.Matchers.is;
+ import static org.hamcrest.Matchers.nullValue;
+ import static org.hamcrest.Matchers.sameInstance;
+ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.jvnet.hudson.test.LogRecorder.recorded;
+ 
+ import hudson.model.FreeStyleProject;
+@@ -14,11 +15,13 @@ import hudson.model.Item;
+ import hudson.model.Items;
+ import hudson.model.JobProperty;
+ import hudson.model.Run;
++import hudson.model.User;
+ import hudson.util.RobustReflectionConverter;
+ import java.net.URI;
+ import java.util.logging.Level;
+ import jenkins.model.Jenkins;
+ import jenkins.model.RunAction2;
++import jenkins.util.xstream.CriticalXStreamException;
+ import org.htmlunit.HttpMethod;
+ import org.htmlunit.Page;
+ import org.htmlunit.WebRequest;
+@@ -103,6 +106,24 @@ class Security3972Test {
+         assertThat(holder.run, sameInstance(build));
+     }
+ 
++    @Test
++    @Issue("SECURITY-3908")
++    void userReplacerSurvivesRoundTrip(JenkinsRule j) throws Exception {
++        User user = User.getById("replacer-test-user", true);
++
++        // This is the XML form produced by User.writeReplace() when a User is a field in another object.
++        String xml = "<?xml version='1.1' encoding='UTF-8'?>\n"
++                + "<jenkins.security.Security3972Test_-UserHolder>\n"
++                + "  <user resolves-to=\"hudson.model.User$Replacer\">\n"
++                + "    <id>" + user.getId() + "</id>\n"
++                + "  </user>\n"
++                + "</jenkins.security.Security3972Test_-UserHolder>";
++
++        UserHolder holder = (UserHolder) Items.XSTREAM2.fromXML(xml);
++
++        assertThat(holder.user, sameInstance(user));
++    }
++
+     @Test
+     void referenceWithClassOnlyLooksAtReference(JenkinsRule j) throws Exception {
+         // XML where the <run> element has BOTH class= naming a PersistenceRoot AND reference=.
+@@ -124,10 +145,28 @@ class Security3972Test {
+                 holder.run, nullValue());
+     }
+ 
++    @Test
++    @Issue("SECURITY-3908")
++    void userCauseReadResolveGadgetMustNotCreateUser(JenkinsRule j) throws Exception {
++        String username = "security3908user";
++        String xml = "<hudson.slaves.OfflineCause_-UserCause>"
++                + "<user><fullName>" + username + "</fullName></user>"
++                + "</hudson.slaves.OfflineCause_-UserCause>";
++
++        final CriticalXStreamException ex = assertThrows(CriticalXStreamException.class, () -> Jenkins.XSTREAM2.fromXML(xml));
++        assertThat(ex.getMessage(), containsString(
++                "Refusing to unmarshal PersistenceRoot subtype 'hudson.model.User' into field 'user' in 'hudson.slaves.OfflineCause$UserCause'. PersistenceRoot objects are document roots and must not appear as nested field values."));
++        assertThat(User.get(username, false), nullValue());
++    }
++
+     static class Holder {
+         public Run<?, ?> run;
+     }
+ 
++    static class UserHolder {
++        public User user;
++    }
++
+     @Test
+     void jenkinsReplacerWorks(JenkinsRule j) throws Exception {
+         final FreeStyleProject project = j.createFreeStyleProject();
+diff --git a/test/src/test/resources/hudson/model/ComputerTest/removeUserDetailsFromOfflineCause/config.xml b/test/src/test/resources/hudson/model/ComputerSessionTest/failToLoadNodeWithSerializedUserCause/config.xml
+similarity index 100%
+rename from test/src/test/resources/hudson/model/ComputerTest/removeUserDetailsFromOfflineCause/config.xml
+rename to test/src/test/resources/hudson/model/ComputerSessionTest/failToLoadNodeWithSerializedUserCause/config.xml
+diff --git a/test/src/test/resources/hudson/model/ComputerTest/removeUserDetailsFromOfflineCause/nodes/deserialized/config.xml b/test/src/test/resources/hudson/model/ComputerSessionTest/failToLoadNodeWithSerializedUserCause/nodes/deserialized/config.xml
+similarity index 100%
+rename from test/src/test/resources/hudson/model/ComputerTest/removeUserDetailsFromOfflineCause/nodes/deserialized/config.xml
+rename to test/src/test/resources/hudson/model/ComputerSessionTest/failToLoadNodeWithSerializedUserCause/nodes/deserialized/config.xml
+diff --git a/test/src/test/resources/hudson/model/ComputerTest/removeUserDetailsFromOfflineCause/users/username/config.xml b/test/src/test/resources/hudson/model/ComputerSessionTest/failToLoadNodeWithSerializedUserCause/users/username/config.xml
+similarity index 100%
+rename from test/src/test/resources/hudson/model/ComputerTest/removeUserDetailsFromOfflineCause/users/username/config.xml
+rename to test/src/test/resources/hudson/model/ComputerSessionTest/failToLoadNodeWithSerializedUserCause/users/username/config.xml
+-- 
+2.43.0
+

@@ -1,0 +1,272 @@
+From 9af594327fd00fc5977cb0b8872e3170d7c71779 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 10:20:40 +0000
+Subject: [PATCH 26/30] [SECURITY-3878]
+
+Core part cherry picked from commit 95e24c6cfa75efd4a7c079ef091df6fd02748d1a.
+Stapler kept on the 2050 line as 2050.k2541.1 with upstream fix d7c3e580 (plus SECURITY-3879/3915/3926 fixes) backported.
+---
+ bom/pom.xml                                   |   2 +-
+ .../hudson/security/csrf/CrumbIssuer.java     |  15 +-
+ .../jenkins/security/Security3878Test.java    | 139 ++++++++++++++++++
+ .../security/stapler/DoActionFilterTest.java  |   6 +
+ .../java/org/kohsuke/stapler/BindTest.java    |   9 +-
+ 5 files changed, 164 insertions(+), 7 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security3878Test.java
+
+diff --git a/bom/pom.xml b/bom/pom.xml
+index ffc5e0e1f5..10f640df68 100644
+--- a/bom/pom.xml
++++ b/bom/pom.xml
+@@ -41,7 +41,7 @@ THE SOFTWARE.
+     <commons-fileupload2.version>2.0.0-M4</commons-fileupload2.version>
+     <groovy.version>2.4.21</groovy.version>
+     <jelly.version>1.1-jenkins-20250731</jelly.version>
+-    <stapler.version>2050.v425108fd5089</stapler.version>
++    <stapler.version>2050.k2541.1</stapler.version>
+   </properties>
+ 
+   <dependencyManagement>
+diff --git a/core/src/main/java/hudson/security/csrf/CrumbIssuer.java b/core/src/main/java/hudson/security/csrf/CrumbIssuer.java
+index 491ec735b5..86598ed4e4 100644
+--- a/core/src/main/java/hudson/security/csrf/CrumbIssuer.java
++++ b/core/src/main/java/hudson/security/csrf/CrumbIssuer.java
+@@ -248,19 +248,30 @@ public abstract class CrumbIssuer implements Describable<CrumbIssuer>, Extension
+             @Override
+             public String issueCrumb(StaplerRequest2 request) {
+                 CrumbIssuer ci = Jenkins.get().getCrumbIssuer();
+-                return ci != null ? ci.getCrumb(request) : DEFAULT.issueCrumb(request);
++                return ci != null ? ci.getCrumb(request) : NONE.issueCrumb(request);
+             }
+ 
+             @Override
+             public void validateCrumb(StaplerRequest2 request, String submittedCrumb) {
+                 CrumbIssuer ci = Jenkins.get().getCrumbIssuer();
+                 if (ci == null) {
+-                    DEFAULT.validateCrumb(request, submittedCrumb);
++                    NONE.validateCrumb(request, submittedCrumb);
+                 } else {
+                     if (!ci.validateCrumb(request, ci.getDescriptor().getCrumbSalt(), submittedCrumb))
+                         throw new SecurityException("Crumb didn't match");
+                 }
+             }
++
++            @Override
++            public String getCrumbExpression() {
++                CrumbIssuer ci = Jenkins.get().getCrumbIssuer();
++                if (ci == null) {
++                    return NONE.getCrumbExpression();
++                } else {
++                    return "document.head.dataset.crumbValue";
++                }
++
++            }
+         });
+     }
+ 
+diff --git a/test/src/test/java/jenkins/security/Security3878Test.java b/test/src/test/java/jenkins/security/Security3878Test.java
+new file mode 100644
+index 0000000000..597864db0d
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security3878Test.java
+@@ -0,0 +1,139 @@
++package jenkins.security;
++
++import static org.hamcrest.CoreMatchers.containsString;
++import static org.hamcrest.CoreMatchers.not;
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.matchesPattern;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotEquals;
++
++import hudson.model.FreeStyleProject;
++import java.net.URL;
++import org.htmlunit.Page;
++import org.htmlunit.ScriptResult;
++import org.htmlunit.WebRequest;
++import org.htmlunit.html.DomElement;
++import org.htmlunit.html.HtmlPage;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@Issue("SECURITY-3878")
++@WithJenkins
++class Security3878Test {
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    @Test
++    void boundScriptEndpointDoesNotContainCrumb() throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        try (JenkinsRule.WebClient wc = j.createWebClient()) {
++            wc.login("alice");
++
++            URL scriptUrl = new URL(j.getURL(), "$stapler/bound/script/whatever?var=varname&methods=methodname");
++            Page script = wc.getPage(new WebRequest(scriptUrl));
++            String content = script.getWebResponse().getContentAsString();
++
++            /* DefaultCrumbIssuer calls Util#toHexString; assert with conservative length */
++            assertThat(content, not(matchesPattern(".*[0-9a-f]{16}.*")));
++
++            /* TestCrumbIssuer */
++            assertThat(content, not(containsString("test")));
++
++            /* The response must contain the safe JS expression instead. */
++            assertThat(content, containsString("document.head.dataset.crumbValue"));
++        }
++    }
++
++    @Test
++    void boundScriptEndpointFunctionalWithCsrfDisabled() throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setCrumbIssuer(null);
++        try (JenkinsRule.WebClient wc = j.createWebClient()) {
++            wc.login("alice");
++
++            URL scriptUrl = new URL(j.getURL(), "$stapler/bound/script/whatever?var=varname&methods=methodname");
++            Page script = wc.getPage(new WebRequest(scriptUrl));
++            String content = script.getWebResponse().getContentAsString();
++
++            assertThat(content, containsString("makeStaplerProxy("));
++            assertThat(content, not(containsString("document.head.dataset.crumbValue")));
++
++            /* TestCrumbIssuer */
++            assertThat(content, not(containsString("test")));
++
++            /* Stapler's CrumbIssuer via CrumbIssuer#initStaplerCrumbIssuer */
++            assertThat(content, containsString("','',["));
++        }
++    }
++
++    @Test
++    void buildsPageRendersProgressivelyWithCsrfEnabled() throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++
++        /* Ensure there's a build to show */
++        FreeStyleProject project = j.createFreeStyleProject("myproject");
++        j.buildAndAssertSuccess(project);
++
++        try (JenkinsRule.WebClient wc = j.createWebClient()) {
++            wc.login("alice");
++            HtmlPage page = wc.goTo("view/All/builds");
++
++            // 0 means all background JS tasks (proxy start + news poll) completed without error.
++            assertEquals(0, wc.waitForBackgroundJavaScript(5_000));
++
++            // The progress bar element is hidden by progressiveRendering.js when status == "done".
++            ScriptResult progressBarDisplay = page.executeJavaScript(
++                    "document.getElementById("
++                            + "document.querySelector('.progressive-rendering-information-holder').dataset.id"
++                            + ").style.display");
++            assertEquals("none", progressBarDisplay.getJavaScriptResult().toString());
++
++            // The build table switches from display:none to visible once displayBuilds() runs.
++            ScriptResult tableDisplay = page.executeJavaScript(
++                    "document.getElementById('projectStatus').style.display");
++            assertNotEquals("none", tableDisplay.getJavaScriptResult().toString());
++
++            // At least one row showing the completed build must be present in the table.
++            DomElement buildTable = page.getElementById("projectStatus");
++            assertThat(buildTable.asNormalizedText(), containsString("myproject"));
++        }
++    }
++
++    @Test
++    void buildsPageRendersProgressivelyWithCsrfDisabled() throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setCrumbIssuer(null);
++
++        /* Ensure there's a build to show */
++        FreeStyleProject project = j.createFreeStyleProject("myproject");
++        j.buildAndAssertSuccess(project);
++
++        try (JenkinsRule.WebClient wc = j.createWebClient()) {
++            wc.login("alice");
++            HtmlPage page = wc.goTo("view/All/builds");
++
++            assertEquals(0, wc.waitForBackgroundJavaScript(5_000));
++
++            ScriptResult progressBarDisplay = page.executeJavaScript(
++                    "document.getElementById("
++                            + "document.querySelector('.progressive-rendering-information-holder').dataset.id"
++                            + ").style.display");
++            assertEquals("none", progressBarDisplay.getJavaScriptResult().toString());
++
++            ScriptResult tableDisplay = page.executeJavaScript(
++                    "document.getElementById('projectStatus').style.display");
++            assertNotEquals("none", tableDisplay.getJavaScriptResult().toString());
++
++            DomElement buildTable = page.getElementById("projectStatus");
++            assertThat(buildTable.asNormalizedText(), containsString("myproject"));
++        }
++    }
++}
+diff --git a/test/src/test/java/jenkins/security/stapler/DoActionFilterTest.java b/test/src/test/java/jenkins/security/stapler/DoActionFilterTest.java
+index 37c8da6932..bdcdc429b3 100644
+--- a/test/src/test/java/jenkins/security/stapler/DoActionFilterTest.java
++++ b/test/src/test/java/jenkins/security/stapler/DoActionFilterTest.java
+@@ -339,6 +339,12 @@ class DoActionFilterTest extends StaplerAbstractTest {
+             public void validateCrumb(StaplerRequest2 request, String submittedCrumb) {
+                 // no exception thrown = validated
+             }
++
++            @Override
++            public String getCrumbExpression() {
++                // intentionally invalid JS expression to cause error on evaluation if ever used
++                return "unused";
++            }
+         });
+ 
+ 
+diff --git a/test/src/test/java/org/kohsuke/stapler/BindTest.java b/test/src/test/java/org/kohsuke/stapler/BindTest.java
+index 31987075f9..a58088810a 100644
+--- a/test/src/test/java/org/kohsuke/stapler/BindTest.java
++++ b/test/src/test/java/org/kohsuke/stapler/BindTest.java
+@@ -59,7 +59,7 @@ class BindTest {
+             final Page script = wc.goTo(Strings.CS.removeStart(scriptUrl, j.contextPath + "/"), "text/javascript");
+             final String content = script.getWebResponse().getContentAsString();
+             assertThat(content, startsWith("varname = makeStaplerProxy('" + j.contextPath + "/$stapler/bound/"));
+-            assertThat(content, endsWith("','test',['annotatedJsMethod1','byName1']);"));
++            assertThat(content, endsWith("',document.head.dataset.crumbValue,['annotatedJsMethod1','byName1']);"));
+         }
+         assertThat(root.invocations, is(1));
+     }
+@@ -78,7 +78,7 @@ class BindTest {
+                     .getAttribute("src");
+ 
+             final Page script = wc.goTo(Strings.CS.removeStart(scriptUrl, j.contextPath + "/"), "text/javascript");
+-            assertThat(script.getWebResponse().getContentAsString(), is("varname = makeStaplerProxy('" + j.contextPath + "/theWellKnownRoot','test',['annotatedJsMethod2','byName2']);"));
++            assertThat(script.getWebResponse().getContentAsString(), is("varname = makeStaplerProxy('" + j.contextPath + "/theWellKnownRoot',document.head.dataset.crumbValue,['annotatedJsMethod2','byName2']);"));
+         }
+         assertThat(root.invocations, is(1));
+     }
+@@ -97,7 +97,8 @@ class BindTest {
+                     .getAttribute("src");
+ 
+             final Page script = wc.goTo(Strings.CS.removeStart(scriptUrl, j.contextPath + "/"), "text/javascript");
+-            assertThat(script.getWebResponse().getContentAsString(), is("varname = makeStaplerProxy('" + j.contextPath + "/the\\'Well\\'Known\\\\\\'Root\\'With\\'Quotes','test',['annotatedJsMethod2','byName2']);"));
++            assertThat(script.getWebResponse().getContentAsString(), is("varname = makeStaplerProxy('" + j.contextPath
++                    + "/the\\'Well\\'Known\\\\\\'Root\\'With\\'Quotes',document.head.dataset.crumbValue,['annotatedJsMethod2','byName2']);"));
+         }
+         assertThat(root.invocations, is(1));
+     }
+@@ -135,7 +136,7 @@ class BindTest {
+                     .getTextContent();
+ 
+             assertThat(content, startsWith("window['varname']=makeStaplerProxy('" + j.contextPath + "/$stapler/bound/"));
+-            assertThat(content, endsWith("','test',['annotatedJsMethod1','byName1']);"));
++            assertThat(content, endsWith("',document.head.dataset.crumbValue,['annotatedJsMethod1','byName1']);"));
+         }
+         assertThat(root.invocations, is(1));
+     }
+-- 
+2.43.0
+

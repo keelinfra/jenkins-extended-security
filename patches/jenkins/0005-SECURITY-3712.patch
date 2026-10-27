@@ -1,0 +1,143 @@
+From f39ed34b9d333355f70c042e9ad9f140620e47bc Mon Sep 17 00:00:00 2001
+From: Kevin-CB <kguerroudj@cloudbees.com>
+Date: Fri, 29 May 2026 07:39:17 +0000
+Subject: [PATCH 05/30] [SECURITY-3712]
+
+(cherry picked from commit a154e1108f3170dc036ecbe6b2a89f164ff1554e)
+---
+ core/src/main/java/hudson/model/Queue.java    |  4 +
+ .../src/test/java/hudson/model/QueueTest.java |  2 +-
+ .../jenkins/security/Security3712Test.java    | 86 +++++++++++++++++++
+ 3 files changed, 91 insertions(+), 1 deletion(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security3712Test.java
+
+diff --git a/core/src/main/java/hudson/model/Queue.java b/core/src/main/java/hudson/model/Queue.java
+index 832c3db5c6..191dbf8a62 100644
+--- a/core/src/main/java/hudson/model/Queue.java
++++ b/core/src/main/java/hudson/model/Queue.java
+@@ -132,6 +132,7 @@ import org.kohsuke.accmod.Restricted;
+ import org.kohsuke.accmod.restrictions.Beta;
+ import org.kohsuke.accmod.restrictions.DoNotUse;
+ import org.kohsuke.accmod.restrictions.NoExternalUse;
++import org.kohsuke.stapler.CancelRequestHandlingException;
+ import org.kohsuke.stapler.HttpResponse;
+ import org.kohsuke.stapler.HttpResponses;
+ import org.kohsuke.stapler.QueryParameter;
+@@ -2486,6 +2487,9 @@ public class Queue extends ResourceController implements Saveable {
+         @Deprecated
+         @RequirePOST
+         public HttpResponse doCancelQueue() {
++            if (!hasReadPermission(this, true)) {
++                throw new CancelRequestHandlingException();
++            }
+             if (hasCancelPermission()) {
+                 Jenkins.get().getQueue().cancel(this);
+             }
+diff --git a/test/src/test/java/hudson/model/QueueTest.java b/test/src/test/java/hudson/model/QueueTest.java
+index 0bcfadc94f..5bc99638a5 100644
+--- a/test/src/test/java/hudson/model/QueueTest.java
++++ b/test/src/test/java/hudson/model/QueueTest.java
+@@ -1304,7 +1304,7 @@ public class QueueTest {
+         r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+         r.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
+                 .grant(Jenkins.READ, Item.READ, Item.CANCEL).everywhere().to("admin")
+-                .grant(Jenkins.READ).everywhere().to("user")
++                .grant(Jenkins.READ, Item.READ).everywhere().to("user")
+         );
+ 
+         // prevent execution to push stuff into the queue
+diff --git a/test/src/test/java/jenkins/security/Security3712Test.java b/test/src/test/java/jenkins/security/Security3712Test.java
+new file mode 100644
+index 0000000000..34fbb5f397
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security3712Test.java
+@@ -0,0 +1,86 @@
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.is;
++
++import hudson.model.Cause;
++import hudson.model.FreeStyleProject;
++import hudson.model.Item;
++import hudson.model.Queue;
++import java.net.URI;
++import java.net.URL;
++import jenkins.model.Jenkins;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.Page;
++import org.htmlunit.WebRequest;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++@Issue("SECURITY-3712")
++class Security3712Test {
++
++    @Test
++    void legacyCancelQueueEndpointEnforcesReadVisibility(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setCrumbIssuer(null);
++
++        final FreeStyleProject project = j.createFreeStyleProject("hidden-job");
++
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ).everywhere().toEveryone()
++                .grant(Item.CANCEL).everywhere().to("attacker")
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin"));
++
++        project.scheduleBuild2(10, new Cause.UserIdCause("admin"));
++
++        final Queue.Item[] items = j.jenkins.getQueue().getItems();
++        assertThat(items.length, is(1));
++        final long id = items[0].getId();
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("attacker")) {
++            wc.setThrowExceptionOnFailingStatusCode(false);
++            wc.setRedirectEnabled(false);
++
++            final WebRequest req = new WebRequest(URI.create(j.jenkins.getRootUrl() + "queue/item/" + id + "/cancelQueue").toURL(), HttpMethod.POST);
++            final Page response = wc.getPage(req);
++
++            assertThat(response.getWebResponse().getStatusCode(), is(404));
++            assertThat(j.jenkins.getQueue().getItems().length, is(1));
++        }
++    }
++
++    @Test
++    void legacyCancelQueueEndpointAllowsCancelWithReadPermission(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setCrumbIssuer(null);
++
++        final FreeStyleProject project = j.createFreeStyleProject("allowed-job");
++
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ).everywhere().toEveryone()
++                .grant(Item.CANCEL, Item.READ).onItems(project).to("user")
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin"));
++
++        project.scheduleBuild2(10, new Cause.UserIdCause("admin"));
++
++        final Queue.Item[] items = j.jenkins.getQueue().getItems();
++        assertThat(items.length, is(1));
++        final long id = items[0].getId();
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("user")) {
++            wc.setThrowExceptionOnFailingStatusCode(false);
++            wc.setRedirectEnabled(false);
++
++            final WebRequest req = new WebRequest(
++                    new URL(j.jenkins.getRootUrl() + "queue/item/" + id + "/cancelQueue"), HttpMethod.POST);
++
++            final Page response = wc.getPage(req);
++            assertThat(response.getWebResponse().getStatusCode(), is(200));
++            assertThat(j.jenkins.getQueue().getItems().length, is(0));
++        }
++    }
++}
+-- 
+2.43.0
+

@@ -1,0 +1,300 @@
+From 076dedfaa36820f5003467a98cec3b2f3c31f1ab Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Wed, 22 Jul 2026 20:53:21 +0000
+Subject: [PATCH 12/30] [SECURITY-3930]
+
+Co-authored-by: Kevin-CB <kguerroudj@cloudbees.com>
+(cherry picked from commit b27f8467753ecd3087ccfc3041621f8941ac412a)
+---
+ core/src/main/java/hudson/FilePath.java       |   8 +
+ .../java/hudson/tasks/ArtifactArchiver.java   |  17 +-
+ .../jenkins/security/Security3657Test.java    | 154 ++++++++++++++++++
+ 3 files changed, 171 insertions(+), 8 deletions(-)
+
+diff --git a/core/src/main/java/hudson/FilePath.java b/core/src/main/java/hudson/FilePath.java
+index ac6b3f7d3a..ead21f429b 100644
+--- a/core/src/main/java/hudson/FilePath.java
++++ b/core/src/main/java/hudson/FilePath.java
+@@ -3100,6 +3100,14 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+                     throw new IOException("Tar " + name + " contains entry that escapes destination directory: " + entryName);
+                 }
+ 
++                if (f.toPath().normalize().equals(normalizedAbsoluteBaseDir)) {
++                    if (te.isDirectory()) {
++                        continue;
++                    }
++                    // tar entry resolves to extraction base dir, so reject unless it's a directory
++                    throw new IOException("Tar " + name + " contains non-directory entry that resolves to base directory: " + entryName);
++                }
++
+                 if (requireReadFromTarPathTraversalValidation(ALLOW_UNTAR_SYMLINK_RESOLUTION)) {
+                     // getCanonicalFile doesn't follow symlinks on Windows, so do this the hard way: Check each ancestor up to the base dir for whether it's a symlink
+                     File current = parent;
+diff --git a/core/src/main/java/hudson/tasks/ArtifactArchiver.java b/core/src/main/java/hudson/tasks/ArtifactArchiver.java
+index 0ee50010e6..bc3d3bbe49 100644
+--- a/core/src/main/java/hudson/tasks/ArtifactArchiver.java
++++ b/core/src/main/java/hudson/tasks/ArtifactArchiver.java
+@@ -44,10 +44,11 @@ import hudson.util.FormValidation;
+ import java.io.File;
+ import java.io.IOException;
+ import java.nio.file.AccessDeniedException;
+-import java.util.HashMap;
+-import java.util.Map;
++import java.util.HashSet;
++import java.util.Set;
+ import java.util.logging.Level;
+ import java.util.logging.Logger;
++import java.util.stream.Collectors;
+ import jenkins.MasterToSlaveFileCallable;
+ import jenkins.model.BuildDiscarder;
+ import jenkins.model.Jenkins;
+@@ -252,9 +253,9 @@ public class ArtifactArchiver extends Recorder implements SimpleBuildStep {
+                 artifacts = environment.expand(artifacts);
+             }
+ 
+-            Map<String, String> files = ws.act(new ListFiles(artifacts, excludes, defaultExcludes, caseSensitive, followSymlinks));
++            Set<String> files = ws.act(new ListFiles(artifacts, excludes, defaultExcludes, caseSensitive, followSymlinks));
+             if (!files.isEmpty()) {
+-                build.pickArtifactManager().archive(ws, launcher, BuildListenerAdapter.wrap(listener), files);
++                build.pickArtifactManager().archive(ws, launcher, BuildListenerAdapter.wrap(listener), files.stream().collect(Collectors.toMap(f -> f, f -> f)));
+                 if (fingerprint) {
+                     Fingerprinter f = new Fingerprinter(artifacts);
+                     f.setExcludes(excludes);
+@@ -292,7 +293,7 @@ public class ArtifactArchiver extends Recorder implements SimpleBuildStep {
+         }
+     }
+ 
+-    private static final class ListFiles extends MasterToSlaveFileCallable<Map<String, String>> {
++    private static final class ListFiles extends MasterToSlaveFileCallable<Set<String>> {
+         private static final long serialVersionUID = 1;
+         private final String includes, excludes;
+         private final boolean defaultExcludes;
+@@ -307,8 +308,8 @@ public class ArtifactArchiver extends Recorder implements SimpleBuildStep {
+             this.followSymlinks = followSymlinks;
+         }
+ 
+-        @Override public Map<String, String> invoke(File basedir, VirtualChannel channel) throws IOException, InterruptedException {
+-            Map<String, String> r = new HashMap<>();
++        @Override public Set<String> invoke(File basedir, VirtualChannel channel) {
++            Set<String> r = new HashSet<>();
+ 
+             FileSet fileSet = Util.createFileSet(basedir, includes, excludes);
+             fileSet.setDefaultexcludes(defaultExcludes);
+@@ -317,7 +318,7 @@ public class ArtifactArchiver extends Recorder implements SimpleBuildStep {
+ 
+             for (String f : fileSet.getDirectoryScanner().getIncludedFiles()) {
+                 f = f.replace(File.separatorChar, '/');
+-                r.put(f, f);
++                r.add(f);
+             }
+             return r;
+         }
+diff --git a/core/src/test/java/jenkins/security/Security3657Test.java b/core/src/test/java/jenkins/security/Security3657Test.java
+index 003f0b41d8..9f02f62d8a 100644
+--- a/core/src/test/java/jenkins/security/Security3657Test.java
++++ b/core/src/test/java/jenkins/security/Security3657Test.java
+@@ -1,28 +1,37 @@
+ package jenkins.security;
+ 
+ import static jenkins.security.Security3657Test.Entry.fileOrDir;
++import static jenkins.security.Security3657Test.Entry.rawSymlink;
+ import static jenkins.security.Security3657Test.Entry.symlink;
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.is;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import hudson.FilePath;
++import hudson.Functions;
+ import hudson.Util;
++import io.jenkins.lib.versionnumber.JavaSpecificationVersion;
+ import java.io.File;
+ import java.io.IOException;
+ import java.lang.reflect.Field;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
++import java.nio.file.InvalidPathException;
+ import java.nio.file.Path;
+ import java.util.List;
++import java.util.Set;
++import jenkins.util.java.JavaUtils;
+ import org.apache.tools.tar.TarConstants;
+ import org.apache.tools.tar.TarEntry;
+ import org.apache.tools.tar.TarOutputStream;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
+ import org.jvnet.hudson.test.Issue;
+ 
+ public class Security3657Test {
+@@ -415,6 +424,120 @@ public class Security3657Test {
+         }
+     }
+ 
++    @Issue("SECURITY-3930")
++    @Test
++    void rejectEmptyName(@TempDir File root) throws Exception {
++        final File extractDir = new File(root, "extract-base");
++        assertTrue(extractDir.mkdirs());
++        final FilePath symlinkTarFile = new FilePath(createTarFile(root, fileOrDir("")));
++        final FilePath extractFilePath = new FilePath(root).child("extract-base");
++        extractFilePath.mkdirs();
++        final IOException ioException = assertThrows(IOException.class, () -> symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE));
++        assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar crafted.tar contains non-directory entry that resolves to base directory: "));
++    }
++
++    @Issue("SECURITY-3930")
++    @Test
++    void rejectDotName(@TempDir File root) throws Exception {
++        final File extractDir = new File(root, "extract-base");
++        assertTrue(extractDir.mkdirs());
++        final FilePath symlinkTarFile = new FilePath(createTarFile(root, fileOrDir(".")));
++        final FilePath extractFilePath = new FilePath(root).child("extract-base");
++        extractFilePath.mkdirs();
++        final IOException ioException = assertThrows(IOException.class, () -> symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE));
++        assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar crafted.tar contains non-directory entry that resolves to base directory: ."));
++    }
++
++    @Issue("SECURITY-3930")
++    @Test
++    void rejectEmptyNameSymlink(@TempDir File root) throws Exception {
++        final File extractDir = new File(root, "extract-base");
++        assertTrue(extractDir.mkdirs());
++        final FilePath symlinkTarFile = new FilePath(createTarFile(root, symlink("", "foo")));
++        final FilePath extractFilePath = new FilePath(root).child("extract-base");
++        extractFilePath.mkdirs();
++        final IOException ioException = assertThrows(IOException.class, () -> symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE));
++        assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar crafted.tar contains non-directory entry that resolves to base directory: "));
++    }
++
++    @Issue("SECURITY-3930")
++    @Test
++    void rejectDotNameSymlink(@TempDir File root) throws Exception {
++        final File extractDir = new File(root, "extract-base");
++        assertTrue(extractDir.mkdirs());
++        final FilePath symlinkTarFile = new FilePath(createTarFile(root, symlink(".", "foo")));
++        final FilePath extractFilePath = new FilePath(root).child("extract-base");
++        extractFilePath.mkdirs();
++        final IOException ioException = assertThrows(IOException.class, () -> symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE));
++        assertFalse(Util.isSymlink(extractDir));
++        assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar crafted.tar contains non-directory entry that resolves to base directory: ."));
++    }
++
++    @Test
++    void symlinkDeletesDir(@TempDir File root) throws Exception {
++        final File extractDir = new File(root, "a/b/extract-base");
++        assertTrue(extractDir.mkdirs());
++        final File escaped = new File(root, "escaped");
++        assertTrue(escaped.mkdirs());
++        final FilePath tarFile = new FilePath(createTarFile(root, rawSymlink(".", "..\\..\\escaped"), fileOrDir("pwned.txt")));
++        final FilePath extractFilePath = new FilePath(root).child("a/b/extract-base");
++        extractFilePath.mkdirs();
++        final IOException ioException = assertThrows(IOException.class, () -> tarFile.untar(extractFilePath, FilePath.TarCompression.NONE));
++        assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar crafted.tar contains non-directory entry that resolves to base directory: ."));
++        assertFalse(Files.exists(escaped.toPath().resolve("pwned.txt")));
++    }
++
++    @Issue("SECURITY-3930")
++    @ParameterizedTest(name = "rawName=[{0}] must not escape")
++    @ValueSource(strings = {"\\", "\\.", "\\\\?\\", ".", "foo/..", "bar\\..", "./.", ".\\.", "././.", ".\\.\\.",
++            "foo/bar/../..", "foo\\bar\\..\\..", "foo/../../extract-base", "foo\\..\\..\\extract-base", "../extract-base", "..\\extract-base"})
++    void rawNameMustNotEscapeExtractionRoot(String rawName, @TempDir File root) throws Exception {
++        assumeFalse("true".equals(System.getenv("DISABLE_SYMLINK_TESTS")));
++        final File extractDir = new File(root, "a/b/extract-base");
++        assertTrue(extractDir.mkdirs());
++        final File escaped = new File(root, "escaped");
++        assertTrue(escaped.mkdirs());
++        final FilePath tarFile = new FilePath(createTarFile(root, rawSymlink(rawName, "..\\..\\escaped"), fileOrDir("pwned.txt")));
++        final FilePath extractFilePath = new FilePath(root).child("a/b/extract-base");
++        extractFilePath.mkdirs();
++        if (Functions.isWindows() || !Set.of("\\\\?\\", "foo\\..\\..\\extract-base", "..\\extract-base").contains(rawName)) {
++            if (rawName.equals("\\\\?\\") && JavaUtils.getCurrentJavaRuntimeVersionNumber().isOlderThan(new JavaSpecificationVersion("22"))) {
++                // Java 22+ has https://github.com/openjdk/jdk25u/commit/12fce4b715f2c8b0091f5c229fcc3e3707290489 which strips leading \\?\ -- without that, we get an InvalidPathException too early
++                assertThrows(InvalidPathException.class, () -> tarFile.untar(extractFilePath, FilePath.TarCompression.NONE), "rawName=[" + rawName + "]");
++                return;
++            }
++            final IOException ioException = assertThrows(IOException.class, () -> tarFile.untar(extractFilePath, FilePath.TarCompression.NONE), "rawName=[" + rawName + "]");
++            assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
++            assertFalse(Files.exists(escaped.toPath().resolve("pwned.txt")), "file escaped the extraction root via name: [" + rawName + "]");
++        } else {
++            // No UNC paths outside Windows
++            tarFile.untar(extractFilePath, FilePath.TarCompression.NONE);
++            // TODO We currently allow re-entry with symlinks at the base, TBD whether we can identify and block
++            assertThat(extractDir.listFiles().length, is(rawName.endsWith("extract-base") ? 1 : 2));
++            assertTrue(new File(extractDir, "pwned.txt").exists());
++        }
++    }
++
++    @Test
++    void allowNonEmptyNames(@TempDir File root) throws Exception {
++        // 'java.nio.file.InvalidPathException: Trailing char < > at index 0:  '
++        assumeFalse(Functions.isWindows());
++        final File extractDir = new File(root, "extract-base");
++        assertTrue(extractDir.mkdirs());
++        final FilePath symlinkTarFile = new FilePath(createTarFile(root, fileOrDir(" "), fileOrDir("\t"), fileOrDir("\n")));
++        final FilePath extractFilePath = new FilePath(root).child("extract-base");
++        extractFilePath.mkdirs();
++        symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE);
++        assertTrue(Files.exists(extractDir.toPath().resolve(" ")), "space-named file must be extracted");
++        assertTrue(Files.exists(extractDir.toPath().resolve("\t")), "tab-named file must be extracted");
++        assertTrue(Files.exists(extractDir.toPath().resolve("\n")), "newline-named file must be extracted");
++    }
++
+     private static File createTarFile(File base, Entry... entries) throws IOException {
+         return createTarFile(base, "crafted.tar", entries);
+     }
+@@ -444,6 +567,13 @@ public class Security3657Test {
+             return new SymlinkEntry(name, target);
+         }
+ 
++        /**
++         * Like {@link #symlink} but writes {@code name} verbatim into the tar header, bypassing the
++         * {@code '\' -> '/'} normalization that {@link TarEntry}'s constructor applies.
++         */
++        static Entry rawSymlink(String name, String target) {
++            return new RawSymlinkEntry(name, target);
++        }
+     }
+ 
+     record FileOrDirEntry(String name) implements Entry {
+@@ -472,4 +602,28 @@ public class Security3657Test {
+             tar.closeEntry();
+         }
+     }
++
++    record RawSymlinkEntry(String name, String target) implements Entry {
++        @Override
++        public void add(TarOutputStream tar) throws IOException {
++            TarEntry symlinkEntry = new TarEntry("placeholder", true);
++            symlinkEntry.setLinkFlag(TarConstants.LF_SYMLINK);
++            symlinkEntry.setLinkName(target);
++            // Overwrite the private name field directly to bypass TarEntry's '\' -> '/' normalization.
++            try {
++                final Field nameField = TarEntry.class.getDeclaredField("name");
++                nameField.setAccessible(true);
++                final Object current = nameField.get(symlinkEntry);
++                if (current instanceof StringBuffer) {
++                    nameField.set(symlinkEntry, new StringBuffer(name));
++                } else {
++                    nameField.set(symlinkEntry, name);
++                }
++            } catch (ReflectiveOperationException e) {
++                throw new IOException("Could not set raw tar entry name", e);
++            }
++            tar.putNextEntry(symlinkEntry);
++            tar.closeEntry();
++        }
++    }
+ }
+-- 
+2.43.0
+

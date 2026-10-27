@@ -1,0 +1,381 @@
+From 535aafe05df635dc67e137fb8fe81f22e0f861c2 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Fri, 29 May 2026 07:39:32 +0000
+Subject: [PATCH 08/30] [SECURITY-3744]
+
+(cherry picked from commit 206f0b565f0ce16b5162160ffb96f5dd59002ff7)
+---
+ .../main/java/hudson/model/AbstractItem.java  |  59 +++++----
+ .../java/hudson/cli/GetJobCommandTest.java    |   5 +-
+ .../BuildAuthorizationTokenMigrationTest.java |  31 +----
+ .../util/RobustReflectionConverterTest.java   |   9 +-
+ test/src/test/java/lib/form/PasswordTest.java | 120 ++++++++++++++++++
+ 5 files changed, 163 insertions(+), 61 deletions(-)
+
+diff --git a/core/src/main/java/hudson/model/AbstractItem.java b/core/src/main/java/hudson/model/AbstractItem.java
+index 8c25615660..6e586d1a34 100644
+--- a/core/src/main/java/hudson/model/AbstractItem.java
++++ b/core/src/main/java/hudson/model/AbstractItem.java
+@@ -43,17 +43,18 @@ import hudson.security.ACLContext;
+ import hudson.security.AccessControlled;
+ import hudson.util.AlternativeUiTextProvider;
+ import hudson.util.AlternativeUiTextProvider.Message;
+-import hudson.util.AtomicFileWriter;
+ import hudson.util.FormValidation;
+-import hudson.util.IOUtils;
+ import hudson.util.Secret;
++import hudson.util.XStream2;
+ import io.jenkins.servlet.ServletExceptionWrapper;
+ import jakarta.servlet.ServletException;
++import java.io.ByteArrayOutputStream;
+ import java.io.File;
+ import java.io.IOException;
+ import java.io.OutputStream;
+-import java.nio.charset.Charset;
+-import java.nio.file.Files;
++import java.io.StringReader;
++import java.io.StringWriter;
++import java.nio.charset.StandardCharsets;
+ import java.util.Collection;
+ import java.util.List;
+ import java.util.ListIterator;
+@@ -883,10 +884,13 @@ public abstract class AbstractItem extends Actionable implements Loadable, Item,
+         checkPermission(EXTENDED_READ);
+         XmlFile configFile = getConfigFile();
+         if (hasPermission(CONFIGURE)) {
+-            IOUtils.copy(configFile.getFile(), os);
++            Items.XSTREAM2.toXMLUTF8(this, os);
+         } else {
++            var baos = new ByteArrayOutputStream();
++            Items.XSTREAM2.toXMLUTF8(this, baos);
++            String xml = baos.toString(StandardCharsets.UTF_8);
++
+             String encoding = configFile.sniffEncoding();
+-            String xml = Files.readString(Util.fileToPath(configFile.getFile()), Charset.forName(encoding));
+ 
+             for (ExtendedReadRedaction redaction : ExtendedReadRedaction.all()) {
+                 LOGGER.log(Level.FINE, () -> "Applying redaction " + redaction.getClass().getName());
+@@ -917,34 +921,29 @@ public abstract class AbstractItem extends Actionable implements Loadable, Item,
+     public void updateByXml(Source source) throws IOException {
+         checkPermission(CONFIGURE);
+         XmlFile configXmlFile = getConfigFile();
+-        final AtomicFileWriter out = new AtomicFileWriter(configXmlFile.getFile());
++        final StringWriter out = new StringWriter();
+         try {
+-            try {
+-                XMLUtils.safeTransform(source, new StreamResult(out));
+-                out.close();
+-            } catch (TransformerException | SAXException e) {
+-                throw new IOException("Failed to persist config.xml", e);
+-            }
+-
+-            // try to reflect the changes by reloading
+-            Object o = new XmlFile(Items.XSTREAM, out.getTemporaryPath().toFile()).unmarshalNullingOut(this);
+-            if (o != this) {
+-                // ensure that we've got the same job type. extending this code to support updating
+-                // to different job type requires destroying & creating a new job type
+-                throw new IOException("Expecting " + this.getClass() + " but got " + o.getClass() + " instead");
+-            }
++            XMLUtils.safeTransform(source, new StreamResult(out));
++            out.close();
++        } catch (TransformerException | SAXException e) {
++            throw new IOException("Failed to process config.xml", e);
++        }
+ 
+-            Items.runWhileUpdatingByXml(() -> onLoad(getParent(), getRootDir().getName()));
+-            Jenkins.get().rebuildDependencyGraphAsync();
++        // try to reflect the changes by reloading
++        Object o = Items.XSTREAM2.unmarshal(XStream2.getDefaultDriver().createReader(new StringReader(out.getBuffer().toString())), this, null, true);
++        if (o != this) {
++            // ensure that we've got the same job type. extending this code to support updating
++            // to different job type requires destroying & creating a new job type
++            throw new IOException("Expecting " + this.getClass() + " but got " + o.getClass() + " instead");
++        }
+ 
+-            // if everything went well, commit this new version
+-            out.commit();
+-            SaveableListener.fireOnChange(this, getConfigFile());
+-            ItemListener.fireOnUpdated(this);
++        Items.runWhileUpdatingByXml(() -> onLoad(getParent(), getRootDir().getName()));
++        Jenkins.get().rebuildDependencyGraphAsync();
+ 
+-        } finally {
+-            out.abort(); // don't leave anything behind
+-        }
++        // if everything went well, re-serialize from memory to encrypt secrets submitted in plaintext
++        configXmlFile.write(this);
++        SaveableListener.fireOnChange(this, getConfigFile());
++        ItemListener.fireOnUpdated(this);
+     }
+ 
+     /**
+diff --git a/test/src/test/java/hudson/cli/GetJobCommandTest.java b/test/src/test/java/hudson/cli/GetJobCommandTest.java
+index 85ef6bcaf8..4ad185fbfe 100644
+--- a/test/src/test/java/hudson/cli/GetJobCommandTest.java
++++ b/test/src/test/java/hudson/cli/GetJobCommandTest.java
+@@ -56,12 +56,13 @@ class GetJobCommandTest {
+         MockFolder d = j.createFolder("d");
+         FreeStyleProject p = d.createProject(FreeStyleProject.class, "p");
+         CLICommandInvoker.Result result = command.invokeWithArgs("d/p");
+-        assertThat(result.stdout(), equalTo(p.getConfigFile().asString()));
++        // TODO Change XStream2#toXMLUTF8 to use single quotes consistent with XmlFile
++        assertThat(result.stdout().replace('"', '\''), equalTo(p.getConfigFile().asString().replace('"', '\'')));
+         assertThat(result, hasNoErrorOutput());
+         assertThat(result, succeeded());
+ 
+         result = command.invokeWithArgs("d");
+-        assertThat(result.stdout(), equalTo(d.getConfigFile().asString()));
++        assertThat(result.stdout().replace('"', '\''), equalTo(d.getConfigFile().asString().replace('"', '\'')));
+         assertThat(result, hasNoErrorOutput());
+         assertThat(result, succeeded());
+     }
+diff --git a/test/src/test/java/hudson/model/BuildAuthorizationTokenMigrationTest.java b/test/src/test/java/hudson/model/BuildAuthorizationTokenMigrationTest.java
+index 03ff2e95a4..cdf0574c70 100644
+--- a/test/src/test/java/hudson/model/BuildAuthorizationTokenMigrationTest.java
++++ b/test/src/test/java/hudson/model/BuildAuthorizationTokenMigrationTest.java
+@@ -1,6 +1,7 @@
+ package hudson.model;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.allOf;
+ import static org.hamcrest.Matchers.containsString;
+ import static org.hamcrest.Matchers.equalTo;
+ import static org.hamcrest.Matchers.not;
+@@ -68,10 +69,10 @@ public class BuildAuthorizationTokenMigrationTest {
+             assertThat(authToken.getToken(), equalTo(OLDTOKEN));
+             assertThat(authToken.getEncryptedToken().getPlainText(), equalTo(OLDTOKEN));
+ 
+-            // Not redacted yet
++            // Gets redacted even though it isn't on disk
+             try (JenkinsRule.WebClient wc = j.createWebClient().login(EXTENDED_READER_USERNAME)) {
+                 final XmlPage xmlPage = wc.goToXml(fs.getUrl() + "config.xml");
+-                assertThat(xmlPage.getWebResponse().getContentAsString(), containsString("<authToken>" + OLDTOKEN + "</authToken>"));
++                assertThat(xmlPage.getWebResponse().getContentAsString(), not(containsString("<authToken>" + OLDTOKEN + "</authToken>")));
+             }
+         }
+ 
+@@ -121,7 +122,7 @@ public class BuildAuthorizationTokenMigrationTest {
+     }
+ 
+     @Test
+-    void testPostConfigXmlAndClearing() throws Exception {
++    void testPostConfigXmlDoesNotTriggerMonitor() throws Exception {
+         j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+         j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy().grant(Jenkins.READ).everywhere().toEveryone().grant(Jenkins.ADMINISTER).everywhere().to(ADMIN_USERNAME));
+ 
+@@ -140,27 +141,9 @@ public class BuildAuthorizationTokenMigrationTest {
+                 final Page apiPage = wc.getPage(webRequest);
+                 assertThat(apiPage.getWebResponse().getStatusCode(), equalTo(200));
+             }
+-
+-            assertThat(j.jenkins.getAdministrativeMonitor("OldData").isActivated(), equalTo(true));
+-
+-            {
+-                // Testing that GET config.xml does not clear the in-memory flag via ConverterImpl
+-                final XmlPage xmlPage = wc.goToXml(freeStyleProject.getUrl() + "config.xml");
+-                assertThat(xmlPage.getWebResponse().getContentAsString(), containsString("plain_token"));
+-
+-                assertThat(freeStyleProject.getConfigFile().asString(), containsString("plain_token"));
+-            }
+-
+-            // Saving clears the admin monitor
+-            freeStyleProject.save();
+-            assertThat(j.jenkins.getAdministrativeMonitor("OldData").isActivated(), equalTo(false));
+-
+-            {
+-                final XmlPage xmlPage = wc.goToXml(freeStyleProject.getUrl() + "config.xml");
+-                assertThat(xmlPage.getWebResponse().getContentAsString(), not(containsString("plain_token")));
+-                assertThat(freeStyleProject.getConfigFile().asString(), not(containsString("plain_token")));
+-            }
+-
+         }
++        assertThat(j.jenkins.getAdministrativeMonitor("OldData").isActivated(), equalTo(false));
++        assertThat(freeStyleProject.getConfigFile().asString(), not(containsString("<authToken>plain_token</authToken>")));
++        assertThat(freeStyleProject.getConfigFile().asString(), allOf(containsString("<authToken>{"), containsString("}</authToken>")));
+     }
+ }
+diff --git a/test/src/test/java/hudson/util/RobustReflectionConverterTest.java b/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
+index bb5f121108..bd81a52ac1 100644
+--- a/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
++++ b/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
+@@ -234,12 +234,11 @@ class RobustReflectionConverterTest {
+             assertNull(p.getProperty(KeywordProperty.class).getNonCriticalField());
+             assertEquals(AcceptOnlySpecificKeyword.ACCEPT_KEYWORD, p.getProperty(KeywordProperty.class).getCriticalField().getKeyword());
+ 
+-            // but save to the disk.
++            // Also not saved to disk as we serialize the object after load
+             r.jenkins.reload();
+ 
+             p = r.jenkins.getItemByFullName(p.getFullName(), FreeStyleProject.class);
+-            assertEquals("badvalue", p.getProperty(KeywordProperty.class).getNonCriticalField().getKeyword());
+-            assertEquals(AcceptOnlySpecificKeyword.ACCEPT_KEYWORD, p.getProperty(KeywordProperty.class).getCriticalField().getKeyword());
++            assertNull(p.getProperty(KeywordProperty.class).getNonCriticalField());
+         }
+ 
+         // with addCriticalField. This is not accepted.
+@@ -306,11 +305,11 @@ class RobustReflectionConverterTest {
+             assertNull(p.getProperty(KeywordProperty.class).getNonCriticalField());
+             assertEquals(AcceptOnlySpecificKeyword.ACCEPT_KEYWORD, p.getProperty(KeywordProperty.class).getCriticalField().getKeyword());
+ 
+-            // but save to the disk.
++            // Also not saved to disk as we serialize the object after load
+             r.jenkins.reload();
+ 
+             p = r.jenkins.getItemByFullName(p.getFullName(), FreeStyleProject.class);
+-            assertEquals("badvalue", p.getProperty(KeywordProperty.class).getNonCriticalField().getKeyword());
++            assertNull(p.getProperty(KeywordProperty.class).getNonCriticalField());
+         }
+ 
+         // with addCriticalField. This is not accepted.
+diff --git a/test/src/test/java/lib/form/PasswordTest.java b/test/src/test/java/lib/form/PasswordTest.java
+index 88a69e2e78..bacc2a91d9 100644
+--- a/test/src/test/java/lib/form/PasswordTest.java
++++ b/test/src/test/java/lib/form/PasswordTest.java
+@@ -68,17 +68,21 @@ import hudson.tasks.BuildStepDescriptor;
+ import hudson.tasks.Builder;
+ import hudson.util.FormValidation;
+ import hudson.util.Secret;
++import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ import java.io.File;
+ import java.io.IOException;
+ import java.io.PrintStream;
++import java.io.StringReader;
+ import java.net.URL;
++import java.nio.charset.StandardCharsets;
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.List;
+ import java.util.Locale;
+ import java.util.Map;
+ import java.util.regex.Pattern;
++import javax.xml.transform.stream.StreamSource;
+ import jenkins.model.GlobalConfiguration;
+ import jenkins.model.Jenkins;
+ import jenkins.model.TransientActionFactory;
+@@ -348,6 +352,122 @@ class PasswordTest {
+         }
+     }
+ 
++    @Issue("SECURITY-3744")
++    @Test
++    void testJobGetConfigXmlAfterRawSubmission() throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy().grant(Jenkins.ADMINISTER).everywhere().to("alice").grant(Jenkins.READ, Item.READ, Item.EXTENDED_READ).everywhere().to("bob"));
++        final FreeStyleProject freeStyleProject = j.createFreeStyleProject();
++        freeStyleProject.getBuildersList().add(new SecretBuilder(Secret.fromString("t0ps3cr3t")));
++        String xmlString;
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("alice")) {
++            final Page page = wc.goTo(freeStyleProject.getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t")));
++        }
++        // Now write the job config with a raw string secret
++        xmlString = xmlString.replaceAll("<secret>[{][^}]+[}]</secret>", "<secret>t0ps3cr3t</secret>");
++        assertThat(xmlString, containsString("<secret>t0ps3cr3t</secret>"));
++        freeStyleProject.updateByXml(new StreamSource(new StringReader(xmlString)));
++        assertThat(freeStyleProject.getConfigFile().asString(), not(containsString("t0ps3cr3t")));
++
++        // still encrypted through the API
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("alice")) {
++            final Page page = wc.goTo(freeStyleProject.getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t")));
++        }
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("bob")) {
++            final Page page = wc.goTo(freeStyleProject.getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t")));
++            assertThat(xmlString, containsString("<secret>********</secret>"));
++        }
++    }
++
++    @Test
++    void testNodeGetConfigXmlAfterRawSubmission() throws Exception {
++        Computer.EXTENDED_READ.setEnabled(true);
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy().grant(Jenkins.ADMINISTER).everywhere().to("alice").grant(Jenkins.READ, Computer.EXTENDED_READ).everywhere().to("bob"));
++
++        final DumbSlave onlineAgent = j.createOnlineSlave();
++        onlineAgent.getNodeProperties().add(new NodePropertyWithSecret(Secret.fromString("t0ps3cr3t_node")));
++        onlineAgent.save();
++
++        String xmlString;
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("alice")) {
++            final Page page = wc.goTo(onlineAgent.getComputer().getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t_node")));
++        }
++        // Now write the node config with a raw string secret
++        xmlString = xmlString.replaceAll("<secret>[{][^}]+[}]</secret>", "<secret>t0ps3cr3t_node</secret>");
++        assertThat(xmlString, containsString("<secret>t0ps3cr3t_node</secret>"));
++        onlineAgent.getComputer().updateByXml(new ByteArrayInputStream(xmlString.getBytes(StandardCharsets.UTF_8)));
++        assertThat(j.jenkins.getNodesObject().getConfigFile(onlineAgent).asString(), not(containsString("t0ps3cr3t_node")));
++
++        // still encrypted through the API
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("alice")) {
++            final Page page = wc.goTo(onlineAgent.getComputer().getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t_node")));
++        }
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("bob")) {
++            final Page page = wc.goTo(onlineAgent.getComputer().getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t_node")));
++            assertThat(xmlString, containsString("<secret>********</secret>"));
++        }
++    }
++
++    @Test
++    void testViewGetConfigXmlAfterRawSubmission() throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy().grant(Jenkins.ADMINISTER).everywhere().to("alice").grant(Jenkins.READ, View.READ).everywhere().to("bob"));
++
++        final ListView view = new ListView("security-3744-view");
++        view.getProperties().add(new ViewPropertyWithSecret(Secret.fromString("t0ps3cr3t_view")));
++        j.jenkins.addView(view);
++
++        String xmlString;
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("alice")) {
++            final Page page = wc.goTo(view.getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t_view")));
++        }
++        // Now write the view config with a raw string secret
++        xmlString = xmlString.replaceAll("<secret>[{][^}]+[}]</secret>", "<secret>t0ps3cr3t_view</secret>");
++        assertThat(xmlString, containsString("<secret>t0ps3cr3t_view</secret>"));
++        view.updateByXml(new StreamSource(new StringReader(xmlString)));
++
++        // still encrypted through the API
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("alice")) {
++            final Page page = wc.goTo(view.getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t_view")));
++        }
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("bob")) {
++            final Page page = wc.goTo(view.getUrl() + "config.xml", "application/xml");
++            xmlString = page.getWebResponse().getContentAsString();
++            assertThat(xmlString, not(containsString("t0ps3cr3t_view")));
++            assertThat(xmlString, containsString("<secret>********</secret>"));
++        }
++    }
++
++    public static class SecretBuilder extends Builder {
++        private final Secret secret;
++
++        @SuppressWarnings("checkstyle:redundantmodifier")
++        public SecretBuilder(Secret secret) {
++            this.secret = secret;
++        }
++
++        public Secret getSecret() {
++            return secret;
++        }
++    }
++
+     @Issue({"SECURITY-266", "SECURITY-304"})
+     @Test
+     @For(ExtendedReadSecretRedaction.class)
+-- 
+2.43.0
+

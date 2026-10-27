@@ -1,0 +1,549 @@
+From 9267d5346b4c224d2bd3567189aa2c9f05a81d31 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Fri, 29 May 2026 07:39:03 +0000
+Subject: [PATCH 02/30] [SECURITY-3707]
+
+(cherry picked from commit d739f6a6266d8cd6c225d94f2f927b549d7b46e5)
+---
+ core/src/main/java/hudson/PluginWrapper.java  |   5 +
+ .../java/hudson/util/CopyOnWriteList.java     |  32 +++-
+ .../java/hudson/util/DescribableList.java     |  11 +-
+ .../util/RobustReflectionConverter.java       |  17 ++
+ .../security/ResourceDomainRootAction.java    |   5 +
+ .../java/hudson/util/DescribableListTest.java |  64 +++++++
+ .../util/RobustReflectionConverterTest.java   |  89 ++++++++++
+ .../jenkins/security/Security3707Test.java    | 161 ++++++++++++++++++
+ 8 files changed, 382 insertions(+), 2 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security3707Test.java
+
+diff --git a/core/src/main/java/hudson/PluginWrapper.java b/core/src/main/java/hudson/PluginWrapper.java
+index 82d13afc18..e255b2b6a8 100644
+--- a/core/src/main/java/hudson/PluginWrapper.java
++++ b/core/src/main/java/hudson/PluginWrapper.java
+@@ -1433,6 +1433,11 @@ public class PluginWrapper implements Comparable<PluginWrapper>, ModelObject {
+         return null;
+     }
+ 
++    private Object readResolve() {
++        LOGGER.log(Level.WARNING, "Blocked deserialization of PluginWrapper for security reasons", new Exception("stack trace"));
++        throw new SecurityException("Blocked deserialization of PluginWrapper for security reasons");
++    }
++
+     private static final Logger LOGGER = Logger.getLogger(PluginWrapper.class.getName());
+ 
+     /**
+diff --git a/core/src/main/java/hudson/util/CopyOnWriteList.java b/core/src/main/java/hudson/util/CopyOnWriteList.java
+index 77bc05b4bf..39644f0bfa 100644
+--- a/core/src/main/java/hudson/util/CopyOnWriteList.java
++++ b/core/src/main/java/hudson/util/CopyOnWriteList.java
+@@ -25,6 +25,7 @@
+ package hudson.util;
+ 
+ import com.thoughtworks.xstream.XStreamException;
++import com.thoughtworks.xstream.converters.ConversionException;
+ import com.thoughtworks.xstream.converters.Converter;
+ import com.thoughtworks.xstream.converters.MarshallingContext;
+ import com.thoughtworks.xstream.converters.UnmarshallingContext;
+@@ -32,6 +33,7 @@ import com.thoughtworks.xstream.converters.collections.AbstractCollectionConvert
+ import com.thoughtworks.xstream.io.HierarchicalStreamReader;
+ import com.thoughtworks.xstream.io.HierarchicalStreamWriter;
+ import com.thoughtworks.xstream.mapper.Mapper;
++import edu.umd.cs.findbugs.annotations.CheckForNull;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+@@ -177,8 +179,26 @@ public class CopyOnWriteList<E> implements Iterable<E> {
+      * {@link Converter} implementation for XStream.
+      */
+     public static final class ConverterImpl extends AbstractCollectionConverter {
++        /**
++         * When available, this field holds the declared element type of the CopyOnWriteList being deserialized.
++         */
++        private final @CheckForNull Class<?> elementType;
++
+         public ConverterImpl(Mapper mapper) {
++            this(mapper, null);
++        }
++
++        /**
++         * Creates a converter that will validate the types of list elements during deserialization.
++         * <p>Elements with invalid types will be omitted from deserialized lists and may result in an
++         * {@link hudson.diagnosis.OldDataMonitor} warning.
++         *
++         * @param mapper the XStream mapper
++         * @param elementType the expected element type, or null to skip type checking
++         */
++        ConverterImpl(Mapper mapper, Class<?> elementType) {
+             super(mapper);
++            this.elementType = elementType;
+         }
+ 
+         @Override
+@@ -201,7 +221,17 @@ public class CopyOnWriteList<E> implements Iterable<E> {
+                 reader.moveDown();
+                 try {
+                     Object item = readItem(reader, context, items);
+-                    items.add(item);
++                    if (elementType != null && item != null && !elementType.isInstance(item)) {
++                        var exception = new ConversionException("Invalid type for CopyOnWriteList element");
++                        // c.f. TreeUnmarshaller.addInformationTo
++                        exception.add("required-type", elementType.getName());
++                        exception.add("class", item.getClass().getName());
++                        exception.add("converter-type", getClass().getName());
++                        reader.appendErrors(exception);
++                        RobustReflectionConverter.addErrorInContext(context, exception);
++                    } else {
++                        items.add(item);
++                    }
+                 } catch (CriticalXStreamException e) {
+                     throw e;
+                 } catch (XStreamException | LinkageError e) {
+diff --git a/core/src/main/java/hudson/util/DescribableList.java b/core/src/main/java/hudson/util/DescribableList.java
+index dbb499b4df..0ce991ed5f 100644
+--- a/core/src/main/java/hudson/util/DescribableList.java
++++ b/core/src/main/java/hudson/util/DescribableList.java
+@@ -278,13 +278,22 @@ public class DescribableList<T extends Describable<T>, D extends Descriptor<T>>
+         CopyOnWriteList.ConverterImpl copyOnWriteListConverter;
+ 
+         public ConverterImpl(Mapper mapper) {
++            this(mapper, null);
++        }
++
++        ConverterImpl(Mapper mapper, Class<?> elementType) {
+             super(mapper);
+-            copyOnWriteListConverter = new CopyOnWriteList.ConverterImpl(mapper());
++            copyOnWriteListConverter = new CopyOnWriteList.ConverterImpl(mapper(), elementType);
+         }
+ 
+         @Override
+         public boolean canConvert(Class type) {
+             // handle subtypes in case the onModified method is overridden.
++            return canConvertRobust(type);
++        }
++
++        static boolean canConvertRobust(Class<?> type) {
++            // Unlike PersistedList.ConverterImpl, this converter is manually registered in XStream2, so subtypes use it.
+             return DescribableList.class.isAssignableFrom(type);
+         }
+ 
+diff --git a/core/src/main/java/hudson/util/RobustReflectionConverter.java b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+index 5267692252..3eb3c095e6 100644
+--- a/core/src/main/java/hudson/util/RobustReflectionConverter.java
++++ b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+@@ -459,11 +459,28 @@ public class RobustReflectionConverter implements Converter {
+                 converter = new RobustCollectionConverter(mapper, reflectionProvider, field.getGenericType());
+             } else if (new RobustMapConverter(mapper).canConvert(type)) {
+                 converter = new RobustMapConverter(mapper, field.getGenericType());
++            } else if (DescribableList.ConverterImpl.canConvertRobust(type)) {
++                Class<?> elementType = extractElementType(field.getGenericType(), DescribableList.class);
++                converter = new DescribableList.ConverterImpl(mapper, elementType);
+             }
+         }
+         return context.convertAnother(result, type, converter);
+     }
+ 
++    /**
++     * Extracts the element type from a generic list type.
++     * For example, given {@code DescribableList<Foo, Descriptor<Foo>>}, returns {@code Foo.class}.
++     */
++    private Class<?> extractElementType(Type genericType, Class<?> listClass) {
++        if (genericType != null && listClass.isAssignableFrom(Types.erasure(genericType))) {
++            var baseType = Types.getBaseClass(genericType, listClass);
++            // Get the first type argument (the element type T)
++            var typeArg = Types.getTypeArgument(baseType, 0, Object.class);
++            return Types.erasure(typeArg);
++        }
++        return null;
++    }
++
+     private void writeValueToImplicitCollection(
+             HierarchicalStreamReader reader,
+             UnmarshallingContext context,
+diff --git a/core/src/main/java/jenkins/security/ResourceDomainRootAction.java b/core/src/main/java/jenkins/security/ResourceDomainRootAction.java
+index bd327599bd..079bf2a97f 100644
+--- a/core/src/main/java/jenkins/security/ResourceDomainRootAction.java
++++ b/core/src/main/java/jenkins/security/ResourceDomainRootAction.java
+@@ -272,6 +272,11 @@ public class ResourceDomainRootAction implements UnprotectedRootAction {
+         public String toString() {
+             return "[" + super.toString() + ", authentication=" + authenticationName + "; key=" + browserUrl + "]";
+         }
++
++        private Object readResolve() {
++            LOGGER.log(Level.WARNING, "Blocked deserialization of InternalResourceRequest for security reasons", new Exception("stack trace"));
++            throw new SecurityException("Blocked deserialization of InternalResourceRequest for security reasons");
++        }
+     }
+ 
+     public static class Token {
+diff --git a/core/src/test/java/hudson/util/DescribableListTest.java b/core/src/test/java/hudson/util/DescribableListTest.java
+index 8bfe83b499..eb2f5ca68d 100644
+--- a/core/src/test/java/hudson/util/DescribableListTest.java
++++ b/core/src/test/java/hudson/util/DescribableListTest.java
+@@ -25,8 +25,14 @@
+ package hudson.util;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.allOf;
+ import static org.hamcrest.Matchers.arrayContaining;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.empty;
++import static org.hamcrest.Matchers.equalTo;
++import static org.hamcrest.Matchers.instanceOf;
+ import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.not;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ 
+ import com.thoughtworks.xstream.converters.basic.AbstractSingleValueConverter;
+@@ -114,4 +120,62 @@ class DescribableListTest {
+ 
+     }
+ 
++    @Test
++    void associatedConverterUsed() {
++        XStream2 xstream = new XStream2();
++
++        final MyDescribableData data = new MyDescribableData();
++        data.describables = new DescribableList<>();
++        data.describables.add(new MyDescribable());
++        final String xml = xstream.toXML(data);
++
++        assertThat(xml, allOf(not(containsString("<data>")), not(containsString("</data>")), not(containsString("<owner"))));
++
++        String craftedXml = xml.replace("<hudson.util.DescribableListTest_-MyDescribable/>", "<string>42</string>");
++        assertThat(xml, not(equalTo(craftedXml)));
++
++        final Object o = xstream.fromXML(craftedXml);
++        assertThat(o, instanceOf(MyDescribableData.class));
++        final DescribableList<MyDescribable, MyDescribable.DescriptorImpl> list = ((MyDescribableData) o).describables;
++        assertThat(list, instanceOf(DescribableList.class));
++        assertThat(list, empty());
++    }
++
++    @Test
++    void associatedConverterUsedForSubclass() {
++        XStream2 xstream = new XStream2();
++
++        final MyDescribableData data = new MyDescribableData();
++        data.describables = new DescribableListSubtype();
++        data.describables.add(new MyDescribable());
++        final String xml = xstream.toXML(data);
++
++        assertThat(xml, allOf(not(containsString("<data>")), not(containsString("</data>")), not(containsString("<owner"))));
++
++        String craftedXml = xml.replace("<hudson.util.DescribableListTest_-MyDescribable/>", "<hudson.util.DescribableListTest_-MyOtherDescribable/>");
++        assertThat(xml, not(equalTo(craftedXml)));
++
++        final Object o = xstream.fromXML(craftedXml);
++        assertThat(o, instanceOf(MyDescribableData.class));
++        final DescribableList<MyDescribable, MyDescribable.DescriptorImpl> list = ((MyDescribableData) o).describables;
++        assertThat(list, instanceOf(DescribableListSubtype.class));
++        assertThat(list, empty());
++    }
++
++    public static class DescribableListSubtype extends DescribableList<MyDescribable, MyDescribable.DescriptorImpl> {}
++
++    private static class MyDescribableData {
++        private DescribableList<MyDescribable, MyDescribable.DescriptorImpl> describables;
++    }
++
++    public static class MyDescribable implements Describable<MyDescribable> {
++        public static class DescriptorImpl extends Descriptor<MyDescribable> {
++        }
++    }
++
++    public static class MyOtherDescribable implements Describable<MyOtherDescribable> {
++        public static class DescriptorImpl extends Descriptor<MyOtherDescribable> {
++        }
++    }
++
+ }
+diff --git a/test/src/test/java/hudson/util/RobustReflectionConverterTest.java b/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
+index a6af20f7d4..bb5f121108 100644
+--- a/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
++++ b/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
+@@ -24,6 +24,12 @@
+ 
+ package hudson.util;
+ 
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.allOf;
++import static org.hamcrest.Matchers.contains;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.hamcrest.Matchers.not;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertNotEquals;
+ import static org.junit.jupiter.api.Assertions.assertNotNull;
+@@ -31,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import edu.umd.cs.findbugs.annotations.NonNull;
++import hudson.ExtensionList;
+ import hudson.cli.CLICommandInvoker;
+ import hudson.diagnosis.OldDataMonitor;
+ import hudson.model.Describable;
+@@ -40,7 +47,9 @@ import hudson.model.Items;
+ import hudson.model.Job;
+ import hudson.model.JobProperty;
+ import hudson.model.JobPropertyDescriptor;
++import hudson.model.ListView;
+ import hudson.model.Saveable;
++import hudson.model.ViewProperty;
+ import hudson.security.ACL;
+ import java.io.ByteArrayInputStream;
+ import java.net.HttpURLConnection;
+@@ -334,4 +343,84 @@ class RobustReflectionConverterTest {
+             assertNotEquals("badvalue", p.getProperty(KeywordProperty.class).getCriticalField().getKeyword());
+         }
+     }
++
++    public static class TypeA implements Describable<TypeA> {
++        private final String value;
++
++        @SuppressWarnings("checkstyle:redundantmodifier")
++        @DataBoundConstructor
++        public TypeA(String value) {
++            this.value = value;
++        }
++
++        public String getValue() {
++            return value;
++        }
++
++        @TestExtension
++        public static class DescriptorImpl extends Descriptor<TypeA> {
++            @NonNull
++            @Override
++            public String getDisplayName() {
++                return "TypeA";
++            }
++        }
++    }
++
++    public static class TypeB implements Describable<TypeB> {
++        private final String value;
++
++        @SuppressWarnings("checkstyle:redundantmodifier")
++        @DataBoundConstructor
++        public TypeB(String value) {
++            this.value = value;
++        }
++
++        public String getValue() {
++            return value;
++        }
++
++        @TestExtension
++        public static class DescriptorImpl extends Descriptor<TypeB> {
++            @NonNull
++            @Override
++            public String getDisplayName() {
++                return "TypeB";
++            }
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-3707")
++    void testDescribableListGenericTypeConfusion() throws Exception {
++        // TypeA is a Describable but not a ViewProperty
++        String maliciousXml = "<?xml version='1.1' encoding='UTF-8'?>"
++                + "<hudson.model.ListView>"
++                + "<name>test</name>"
++                + "<properties>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "<value>malicious</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "</properties>"
++                + "</hudson.model.ListView>";
++
++        ListView view = (ListView) Items.XSTREAM2.fromXML(maliciousXml);
++
++        assertThat(view.getProperties(), not(contains(instanceOf(ViewProperty.class))));
++        assertThat(view.getProperties(), not(contains(instanceOf(TypeA.class))));
++        assertThat(view.getProperties(), not(contains(instanceOf(TypeB.class))));
++
++        // Verify the rejected data is recorded in OldDataMonitor
++        final OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        assertTrue(odm.isActivated());
++
++        Map<Saveable, OldDataMonitor.VersionRange> data = odm.getData();
++        assertTrue(data.containsKey(view));
++        String errorText = data.get(view).extra;
++        assertThat(errorText, allOf(
++                containsString("message             : Invalid type for CopyOnWriteList element"),
++                containsString("required-type       : hudson.model.ViewProperty"),
++                containsString("class               : hudson.util.RobustReflectionConverterTest$TypeA"),
++                containsString("converter-type      : hudson.util.CopyOnWriteList$ConverterImpl")));
++    }
+ }
+diff --git a/test/src/test/java/jenkins/security/Security3707Test.java b/test/src/test/java/jenkins/security/Security3707Test.java
+new file mode 100644
+index 0000000000..9d3dc990d5
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security3707Test.java
+@@ -0,0 +1,161 @@
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.not;
++import static org.hamcrest.Matchers.nullValue;
++
++import edu.umd.cs.findbugs.annotations.CheckForNull;
++import hudson.ExtensionList;
++import hudson.Plugin;
++import hudson.model.UnprotectedRootAction;
++import hudson.model.User;
++import hudson.util.XStream2;
++import java.io.BufferedInputStream;
++import java.io.ByteArrayInputStream;
++import java.io.File;
++import java.io.InputStream;
++import java.io.StringWriter;
++import java.net.URI;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import javax.xml.transform.stream.StreamResult;
++import javax.xml.transform.stream.StreamSource;
++import jenkins.model.Jenkins;
++import jenkins.security.stapler.StaplerDispatchable;
++import jenkins.util.xml.XMLUtils;
++import org.htmlunit.FormEncodingType;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.Page;
++import org.htmlunit.WebRequest;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.TestExtension;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++import org.kohsuke.stapler.StaplerRequest2;
++import org.kohsuke.stapler.StaplerResponse2;
++import org.kohsuke.stapler.WebMethod;
++import org.kohsuke.stapler.verb.POST;
++
++@WithJenkins
++public class Security3707Test {
++    @Test
++    void testInternalResourceRequestDeserialization(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin")
++                .grant(Jenkins.READ).everywhere().to("alice"));
++
++        // Create user to make this work
++        User.getById("admin", true);
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().withBasicApiToken("alice").withThrowExceptionOnFailingStatusCode(false)) {
++            WebRequest configRequest = new WebRequest(URI.create(wc.getContextPath() + "vulnerable-object/config.xml").toURL(), HttpMethod.POST);
++            configRequest.setAdditionalHeader("Content-Type", "application/xml");
++            configRequest.setRequestBody("""
++                    <jenkins.security.Security3707Test_-VulnerableRootAction>
++                      <routableField class="jenkins.security.ResourceDomainRootAction$InternalResourceRequest">
++                        <authenticationName>admin</authenticationName>
++                        <browserUrl>/scriptText</browserUrl>
++                      </routableField>
++                    </jenkins.security.Security3707Test_-VulnerableRootAction>""");
++            final Page configResult = wc.getPage(configRequest);
++            assertThat("Config submission should succeed", configResult.getWebResponse().getStatusCode(), is(200));
++
++            VulnerableRootAction action = ExtensionList.lookupSingleton(VulnerableRootAction.class);
++            assertThat("routableField should be null (deserialization blocked)", action.routableField, nullValue());
++
++            WebRequest scriptRequest = new WebRequest(URI.create(wc.getContextPath() + "vulnerable-object/routableField/").toURL(), HttpMethod.POST);
++            scriptRequest.setEncodingType(FormEncodingType.URL_ENCODED);
++            scriptRequest.setRequestBody("script=Jenkins.get().systemMessage='field exploit successful'");
++            final Page scriptResult = wc.getPage(scriptRequest);
++            assertThat("Request should fail", scriptResult.getWebResponse().getStatusCode(), is(404));
++
++            assertThat("System message should not be set", j.jenkins.getSystemMessage(), is(nullValue()));
++        }
++    }
++
++    @Test
++    void testPluginDeserialization(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ).everywhere().to("alice"));
++
++        // Verify the master.key file exists (created by Jenkins on startup)
++        File masterKeyFile = new File(j.jenkins.getRootDir(), "secrets/master.key");
++        assertThat("master.key should exist", masterKeyFile.exists(), is(true));
++        String originalMasterKey = Files.readString(masterKeyFile.toPath());
++        assertThat("master.key should not be empty", originalMasterKey.length(), is(256));
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().withBasicApiToken("alice").withThrowExceptionOnFailingStatusCode(false)) {
++            // Submit malicious config.xml with Plugin.DummyImpl containing a manipulated PluginWrapper
++            // The PluginWrapper's baseResourceURL points to the Jenkins root directory
++            WebRequest configRequest = new WebRequest(URI.create(wc.getContextPath() + "vulnerable-object/config.xml").toURL(), HttpMethod.POST);
++            configRequest.setAdditionalHeader("Content-Type", "application/xml");
++            configRequest.setRequestBody("""
++                    <jenkins.security.Security3707Test_-VulnerableRootAction>
++                      <routableField class="hudson.Plugin$DummyImpl">
++                        <wrapper class="hudson.PluginWrapper">
++                          <baseResourceURL>file://""" + j.jenkins.getRootDir().getAbsolutePath() + """
++/</baseResourceURL>
++                        </wrapper>
++                      </routableField>
++                    </jenkins.security.Security3707Test_-VulnerableRootAction>""");
++            final Page configResult = wc.getPage(configRequest);
++            assertThat("Config submission should succeed", configResult.getWebResponse().getStatusCode(), is(200));
++
++            // Verify the malicious object was NOT deserialized - readResolve should block it
++            VulnerableRootAction action = ExtensionList.lookupSingleton(VulnerableRootAction.class);
++            assertThat("Plugin could be deserialized", action.routableField, instanceOf(Plugin.DummyImpl.class));
++            assertThat("PluginWrapper was not deserialized", ((Plugin) action.routableField).getWrapper(), nullValue());
++
++            // WebRequest because it's HTML when the test passes, application/octet-stream when not
++            WebRequest fileRequest = new WebRequest(URI.create(wc.getContextPath() + "vulnerable-object/routableField/secrets/master.key").toURL());
++            final Page fileResult = wc.getPage(fileRequest);
++            assertThat("NPE in Plugin#doDynamicImpl", fileResult.getWebResponse().getStatusCode(), is(500));
++            assertThat(fileResult.getWebResponse().getContentAsString(), not(originalMasterKey));
++        }
++    }
++
++    @TestExtension
++    public static class VulnerableRootAction implements UnprotectedRootAction {
++        @StaplerDispatchable
++        public Object routableField;
++
++        @CheckForNull
++        @Override
++        public String getIconFileName() {
++            return null;
++        }
++
++        @CheckForNull
++        @Override
++        public String getDisplayName() {
++            return null;
++        }
++
++        @CheckForNull
++        @Override
++        public String getUrlName() {
++            return "vulnerable-object";
++        }
++
++        @WebMethod(name = "config.xml")
++        @POST
++        public void doConfigDotXml(StaplerRequest2 req, StaplerResponse2 rsp) throws Exception {
++            updateByXml(new StreamSource(req.getReader()));
++            rsp.setStatus(200);
++        }
++
++        private void updateByXml(StreamSource source) throws Exception {
++            StringWriter out = new StringWriter();
++            XMLUtils.safeTransform(source, new StreamResult(out));
++
++            try (InputStream in = new BufferedInputStream(new ByteArrayInputStream(out.toString().getBytes(StandardCharsets.UTF_8)))) {
++                Jenkins.XSTREAM2.unmarshal(XStream2.getDefaultDriver().createReader(in), this, null, true);
++            }
++        }
++    }
++}
+-- 
+2.43.0
+

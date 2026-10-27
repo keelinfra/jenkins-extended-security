@@ -1,0 +1,31 @@
+From 73c028b65eee0b7149cc35c681f6c3c55f26523a Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 08:39:18 +0000
+Subject: [PATCH 25/30] [SECURITY-3911] Use Remoting 3352.k2541.1 (3352 line +
+ upstream fix 931d3c99)
+
+Adaptation, not an upstream commit. Upstream fixed SECURITY-3911 in a newer
+Remoting line. 2.541.3 ships Remoting 3352.v17a_fb_4b_2773f, so the upstream
+fix 931d3c99 is applied to that line (patches/remoting) and released here as
+3352.k2541.1. This patch points core at that version.
+
+---
+ pom.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pom.xml b/pom.xml
+index f76fc2ed34..db1db4fc7a 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -87,7 +87,7 @@ THE SOFTWARE.
+     <changelog.url>https://www.jenkins.io/changelog</changelog.url>
+ 
+     <!-- Bundled Remoting version -->
+-    <remoting.version>3352.v17a_fb_4b_2773f</remoting.version>
++    <remoting.version>3352.k2541.1</remoting.version>
+ 
+     <spotbugs.effort>Max</spotbugs.effort>
+     <spotbugs.threshold>Medium</spotbugs.threshold>
+-- 
+2.43.0
+

@@ -1,0 +1,159 @@
+From 0fd41733b98bcaa2e05234db9dc06f056d5af9f5 Mon Sep 17 00:00:00 2001
+From: Kevin-CB <kguerroudj@cloudbees.com>
+Date: Wed, 22 Jul 2026 20:53:16 +0000
+Subject: [PATCH 11/30] [SECURITY-3927]
+
+(cherry picked from commit ce45d8b85225a5fb45f0a91be368f3592782ee60)
+---
+ .../java/hudson/model/FileParameterValue.java | 28 ++++++++--
+ .../hudson/model/FileParameterValueTest.java  | 56 +++++++++++++++++++
+ 2 files changed, 80 insertions(+), 4 deletions(-)
+
+diff --git a/core/src/main/java/hudson/model/FileParameterValue.java b/core/src/main/java/hudson/model/FileParameterValue.java
+index c3e508d941..3073f7753d 100644
+--- a/core/src/main/java/hudson/model/FileParameterValue.java
++++ b/core/src/main/java/hudson/model/FileParameterValue.java
+@@ -69,7 +69,7 @@ public class FileParameterValue extends ParameterValue {
+     private static final Logger LOGGER = Logger.getLogger(FileParameterValue.class.getName());
+ 
+     private static final String FOLDER_NAME = "fileParameters";
+-    private static final Pattern PROHIBITED_DOUBLE_DOT = Pattern.compile(".*[\\\\/]\\.\\.[\\\\/].*");
++    private static final Pattern PROHIBITED_DOUBLE_DOT = Pattern.compile(".*[\\\\/]\\.\\.[\\\\/].*", Pattern.DOTALL);
+     private static final long serialVersionUID = -143427023159076073L;
+ 
+     /**
+@@ -208,12 +208,18 @@ public class FileParameterValue extends ParameterValue {
+                         if (ws == null) {
+                             throw new IllegalStateException("The workspace should be created when setUp method is called");
+                         }
+-                        if (!ALLOW_FOLDER_TRAVERSAL_OUTSIDE_WORKSPACE && (PROHIBITED_DOUBLE_DOT.matcher(location).matches() || !ws.isDescendant(location))) {
++                        FilePath locationFilePath = ws.child(location);
++                        FilePath controllerLocation = new FilePath(getLocationUnderBuild(build));
++                        FilePath controllerBase = new FilePath(getFileParameterFolderUnderBuild(build));
++                        if (!ALLOW_FOLDER_TRAVERSAL_OUTSIDE_WORKSPACE
++                                && (PROHIBITED_DOUBLE_DOT.matcher(location).matches()
++                                    || !ws.isDescendant(location)
++                                    || !isWithin(locationFilePath, ws)
++                                    || !isWithin(controllerLocation, controllerBase))) {
+                             listener.error("Rejecting file path escaping base directory with relative path: " + location);
+                             // force the build to fail
+                             return null;
+                         }
+-                        FilePath locationFilePath = ws.child(location);
+                         locationFilePath.getParent().mkdirs();
+ 
+                         // TODO Remove this workaround after FILEUPLOAD-293 is resolved.
+@@ -221,7 +227,7 @@ public class FileParameterValue extends ParameterValue {
+                             locationFilePath.delete();
+                         }
+                         locationFilePath.copyFrom(file);
+-                        locationFilePath.copyTo(new FilePath(getLocationUnderBuild(build)));
++                        locationFilePath.copyTo(controllerLocation);
+                     } finally {
+                         if (tmpFileName != null) {
+                             File tmp = new File(tmpFileName);
+@@ -303,6 +309,20 @@ public class FileParameterValue extends ParameterValue {
+         return new File(build.getRootDir(), FOLDER_NAME);
+     }
+ 
++    /**
++     * Checks that {@code candidate} resolves to a location at or below {@code base}, comparing the
++     * paths after {@link FilePath} normalization so the check uses the same semantics as the write
++     * (both {@code /} and {@code \} are treated as separators and {@code ..} segments are collapsed).
++     */
++    private static boolean isWithin(FilePath candidate, FilePath base) {
++        String basePath = base.getRemote();
++        String candidatePath = candidate.getRemote();
++        if (candidatePath.equals(basePath)) {
++            return true;
++        }
++        return candidatePath.startsWith(basePath + "/") || candidatePath.startsWith(basePath + "\\");
++    }
++
+     @Extension
+     public static class CancelledQueueListener extends QueueListener {
+ 
+diff --git a/test/src/test/java/hudson/model/FileParameterValueTest.java b/test/src/test/java/hudson/model/FileParameterValueTest.java
+index 5439fca860..cc1b57b16b 100644
+--- a/test/src/test/java/hudson/model/FileParameterValueTest.java
++++ b/test/src/test/java/hudson/model/FileParameterValueTest.java
+@@ -33,6 +33,7 @@ import static org.hamcrest.Matchers.not;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertNotEquals;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.junit.jupiter.api.Assumptions.assumeFalse;
+ 
+ import hudson.FilePath;
+ import hudson.Functions;
+@@ -59,6 +60,10 @@ import org.jvnet.hudson.test.recipes.LocalData;
+ @WithJenkins
+ class FileParameterValueTest {
+ 
++    private static final String LINE_SEPARATOR = String.valueOf((char) 0x2028);
++    private static final String PARAGRAPH_SEPARATOR = String.valueOf((char) 0x2029);
++    private static final String NEXT_LINE = String.valueOf((char) 0x0085);
++
+     @TempDir
+     private File tmp;
+ 
+@@ -172,6 +177,57 @@ class FileParameterValueTest {
+         wc.getOptions().setThrowExceptionOnFailingStatusCode(false);
+     }
+ 
++    @Test
++    @Issue("SECURITY-3927")
++    void fileParameter_cannotCreateFile_outsideOfBuildFolder_oddCharPrefix() throws Exception {
++        List<String> oddChars = List.of(LINE_SEPARATOR, PARAGRAPH_SEPARATOR, NEXT_LINE, "\r", "\n");
++
++        FilePath root = j.jenkins.getRootPath();
++
++        for (String oddChar : oddChars) {
++            String location = oddChar + "../../../../../root-level.txt";
++
++            FreeStyleProject p = j.createFreeStyleProject();
++            p.addProperty(new ParametersDefinitionProperty(List.of(
++                    new FileParameterDefinition(location, null)
++            )));
++
++            assertThat(root.child("root-level.txt").exists(), equalTo(false));
++
++            File uploadedFile = File.createTempFile("junit", null, tmp);
++            Files.writeString(uploadedFile.toPath(), "test-content", StandardCharsets.UTF_8);
++
++            j.assertBuildStatus(Result.FAILURE, p.scheduleBuild2(0, new Cause.UserIdCause(), new ParametersAction(
++                    new FileParameterValue(location, uploadedFile, "uploaded-file.txt")
++            )));
++            assertThat(root.child("root-level.txt").exists(), equalTo(false));
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-3927")
++    void fileParameter_cannotCreateFile_outsideOfBuildFolder_backslashOnUnixAgent() throws Exception {
++        assumeFalse(Functions.isWindows(), "Backslash is only an ordinary filename character on non-Windows");
++        String location = "..\\..\\..\\..\\..\\root-level.txt";
++
++        FilePath root = j.jenkins.getRootPath();
++
++        FreeStyleProject p = j.createFreeStyleProject();
++        p.addProperty(new ParametersDefinitionProperty(List.of(
++                new FileParameterDefinition(location, null)
++        )));
++
++        assertThat(root.child("root-level.txt").exists(), equalTo(false));
++
++        File uploadedFile = File.createTempFile("junit", null, tmp);
++        Files.writeString(uploadedFile.toPath(), "test-content", StandardCharsets.UTF_8);
++
++        j.assertBuildStatus(Result.FAILURE, p.scheduleBuild2(0, new Cause.UserIdCause(), new ParametersAction(
++                new FileParameterValue(location, uploadedFile, "uploaded-file.txt")
++        )));
++        assertThat(root.child("root-level.txt").exists(), equalTo(false));
++    }
++
+     private void checkUrlNot200AndNotContains(JenkinsRule.WebClient wc, String url, String contentNotPresent) throws Exception {
+         Page pageForEncoded = wc.goTo(url, null);
+         assertThat(pageForEncoded.getWebResponse().getStatusCode(), not(equalTo(200)));
+-- 
+2.43.0
+

@@ -1,0 +1,492 @@
+From 705163084d047ef16da764b926d6832c4436ed47 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 10:21:11 +0000
+Subject: [PATCH 18/30] [SECURITY-3972]
+
+(cherry picked from commit e174eeb116a565c166215acc2e0c1ce94d60a16c)
+---
+ core/src/main/java/hudson/model/Queue.java    |   3 +
+ .../util/RobustReflectionConverter.java       |  76 +++++++++
+ core/src/main/java/hudson/util/XStream2.java  |   1 +
+ core/src/main/java/jenkins/model/Jenkins.java |  16 ++
+ .../test/java/hudson/model/RunActionTest.java |  21 ++-
+ test/src/test/java/hudson/model/ViewTest.java |  12 +-
+ .../Security3972QueueRestartTest.java         |  49 ++++++
+ .../jenkins/security/Security3972Test.java    | 151 ++++++++++++++++++
+ 8 files changed, 323 insertions(+), 6 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security3972QueueRestartTest.java
+ create mode 100644 test/src/test/java/jenkins/security/Security3972Test.java
+
+diff --git a/core/src/main/java/hudson/model/Queue.java b/core/src/main/java/hudson/model/Queue.java
+index 945d205a40..c5c70af0e0 100644
+--- a/core/src/main/java/hudson/model/Queue.java
++++ b/core/src/main/java/hudson/model/Queue.java
+@@ -126,6 +126,7 @@ import jenkins.util.SystemProperties;
+ import jenkins.util.ThrowingCallable;
+ import jenkins.util.ThrowingRunnable;
+ import jenkins.util.Timer;
++import jenkins.util.xstream.CriticalXStreamException;
+ import net.jcip.annotations.GuardedBy;
+ import org.jenkinsci.remoting.RoleChecker;
+ import org.kohsuke.accmod.Restricted;
+@@ -455,6 +456,8 @@ public class Queue extends ResourceController implements Saveable {
+                 File bk = new File(queueFile.getPath() + ".bak");
+                 Files.move(queueFile.toPath(), bk.toPath(), StandardCopyOption.REPLACE_EXISTING);
+             }
++        } catch (CriticalXStreamException e) {
++            LOGGER.log(Level.WARNING, "Failed to load the queue file due to a security policy violation; starting with an empty queue. " + getXMLQueueFile(), e);
+         } catch (IOException | InvalidPathException e) {
+             LOGGER.log(Level.WARNING, "Failed to load the queue file " + getXMLQueueFile(), e);
+         } finally { updateSnapshot(); } } finally {
+diff --git a/core/src/main/java/hudson/util/RobustReflectionConverter.java b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+index 3eb3c095e6..b5383be002 100644
+--- a/core/src/main/java/hudson/util/RobustReflectionConverter.java
++++ b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+@@ -29,6 +29,7 @@ import static java.util.logging.Level.FINE;
+ import com.thoughtworks.xstream.XStreamException;
+ import com.thoughtworks.xstream.converters.ConversionException;
+ import com.thoughtworks.xstream.converters.Converter;
++import com.thoughtworks.xstream.converters.ConverterLookup;
+ import com.thoughtworks.xstream.converters.MarshallingContext;
+ import com.thoughtworks.xstream.converters.SingleValueConverter;
+ import com.thoughtworks.xstream.converters.UnmarshallingContext;
+@@ -45,6 +46,7 @@ import com.thoughtworks.xstream.mapper.Mapper;
+ import com.thoughtworks.xstream.security.InputManipulationException;
+ import edu.umd.cs.findbugs.annotations.NonNull;
+ import hudson.diagnosis.OldDataMonitor;
++import hudson.model.PersistenceRoot;
+ import hudson.model.Saveable;
+ import hudson.security.ACL;
+ import java.lang.reflect.Field;
+@@ -98,6 +100,11 @@ public class RobustReflectionConverter implements Converter {
+     private final ReadWriteLock criticalFieldsLock = new ReentrantReadWriteLock();
+     @GuardedBy("criticalFieldsLock")
+     private final Map<String, Set<String>> criticalFields = new HashMap<>();
++    private ConverterLookup converterLookup;
++
++    void setConverterLookup(ConverterLookup converterLookup) {
++        this.converterLookup = converterLookup;
++    }
+ 
+     public RobustReflectionConverter(Mapper mapper, ReflectionProvider reflectionProvider) {
+         this(mapper, reflectionProvider, new XStream2().new PluginClassOwnership());
+@@ -350,6 +357,13 @@ public class RobustReflectionConverter implements Converter {
+                 final Object value;
+                 if (fieldExistsInClass) {
+                     Field field = reflectionProvider.getField(result.getClass(), fieldName);
++                    if (PersistenceRoot.class.isAssignableFrom(type) && !isSafePersistenceRootReference(reader)) {
++                        final String msg = "Refusing to unmarshal PersistenceRoot subtype '" + type.getName() + "' into field '"
++                                + fieldName + "' in '" + result.getClass().getName()
++                                + "'. PersistenceRoot objects are document roots and must not appear as nested field values.";
++                        LOGGER.log(Level.WARNING, msg);
++                        throw new CriticalXStreamException(new XStreamException(msg));
++                    }
+                     value = unmarshalField(context, result, type, field);
+                     // TODO the reflection provider should have returned the proper field in first place ....
+                     Class definedType = reflectionProvider.getFieldType(result, fieldName, classDefiningField);
+@@ -446,6 +460,68 @@ public class RobustReflectionConverter implements Converter {
+         list.add(e);
+     }
+ 
++    /**
++     * Returns true when the current XML element carrying a {@link PersistenceRoot}-typed field is
++     * safe to unmarshal. There are three safe patterns:
++     *
++     * <ol>
++     *   <li><b>XStream back-reference</b>: the element has a {@code reference=} system attribute.
++     *       XStream resolves this to an already-deserialized ancestor object from the current context
++     *       (e.g. {@code <owner class="hudson" reference="../../.."/>} inside a view serialized into
++     *       the same config.xml as the Jenkins root). No new object is constructed; no attacker-controlled
++     *       state enters the graph.</li>
++     *   <li><b>Replacement placeholder</b>: the element carries a {@code resolves-to} attribute naming
++     *       a non-{@link PersistenceRoot} type (e.g. {@code Run$Replacer} or {@code User$Replacer})
++     *       and has no {@code class=} override. The placeholder's {@code readResolve()} looks up the
++     *       live instance by ID rather than carrying attacker-controlled state.</li>
++     *   <li><b>Single-value reference</b>: the element has a {@code class=} attribute and the resolved
++     *       type has a {@link com.thoughtworks.xstream.converters.SingleValueConverter} registered in the
++     *       converter lookup. Such converters (e.g. {@link com.thoughtworks.xstream.converters.basic.AbstractSingleValueConverter})
++     *       serialize a {@link PersistenceRoot} as a plain identifier string (no child XML elements), so
++     *       no attacker-controlled object graph can be injected via reflection.
++     *       Example: {@code Queue.XSTREAM}'s converter for {@code hudson.model.Item} writes
++     *       {@code <task class="hudson.model.FreeStyleProject">project-name</task>}; the text content is
++     *       handled by the single-value converter which performs a safe registry lookup.</li>
++     * </ol>
++     */
++    private boolean isSafePersistenceRootReference(HierarchicalStreamReader reader) {
++        // Pattern 1: XStream back-reference — already-deserialized object, nothing new constructed.
++        String referenceAttr = reader.getAttribute(mapper.aliasForSystemAttribute("reference"));
++        if (referenceAttr != null) {
++            return true;
++        }
++        // Pattern 2: writeReplace placeholder — resolves-to names a non-PersistenceRoot replacer class,
++        // and there is no class= attribute that could override it with an arbitrary PersistenceRoot.
++        String classAttr = reader.getAttribute(mapper.aliasForAttribute("class"));
++        if (classAttr != null) {
++            // Pattern 3: single-value reference — the resolved type has a SingleValueConverter
++            // registered (e.g. Queue.XSTREAM's converter for hudson.model.Item). Such converters
++            // serialize PersistenceRoot objects as plain identifier strings with no child XML elements,
++            // so no attacker-controlled object graph can be injected.
++            if (converterLookup != null) {
++                try {
++                    Class<?> resolvedType = mapper.realClass(classAttr);
++                    if (converterLookup.lookupConverterForType(resolvedType) instanceof SingleValueConverter) {
++                        return true;
++                    }
++                } catch (Exception ignored) {
++                    // class not resolvable — fall through
++                }
++            }
++            return false;
++        }
++        String resolvesToAttr = reader.getAttribute(mapper.aliasForAttribute("resolves-to"));
++        if (resolvesToAttr == null) {
++            return false;
++        }
++        try {
++            Class<?> replacerType = mapper.realClass(resolvesToAttr);
++            return !PersistenceRoot.class.isAssignableFrom(replacerType);
++        } catch (Exception e) {
++            return false;
++        }
++    }
++
+     private boolean fieldDefinedInClass(Object result, String attrName) {
+         // during unmarshalling, unmarshal into transient fields like XStream 1.1.3
+         //boolean fieldExistsInClass = reflectionProvider.fieldDefinedInClass(attrName, result.getClass());
+diff --git a/core/src/main/java/hudson/util/XStream2.java b/core/src/main/java/hudson/util/XStream2.java
+index 774008e5e6..24b916fe05 100644
+--- a/core/src/main/java/hudson/util/XStream2.java
++++ b/core/src/main/java/hudson/util/XStream2.java
+@@ -286,6 +286,7 @@ public class XStream2 extends XStream {
+         super.setupConverters();
+         // replace default reflection converter
+         reflectionConverter = new RobustReflectionConverter(getMapper(), JVM.newReflectionProvider(), new PluginClassOwnership());
++        reflectionConverter.setConverterLookup(getConverterLookup());
+         registerConverter(reflectionConverter, PRIORITY_VERY_LOW + 1);
+     }
+ 
+diff --git a/core/src/main/java/jenkins/model/Jenkins.java b/core/src/main/java/jenkins/model/Jenkins.java
+index d4b3ca3cf3..94b29a41ec 100644
+--- a/core/src/main/java/jenkins/model/Jenkins.java
++++ b/core/src/main/java/jenkins/model/Jenkins.java
+@@ -1058,6 +1058,12 @@ public class Jenkins extends AbstractCIBase implements DirectlyModifiableTopLeve
+      */
+     @SuppressWarnings("unused")
+     protected Object readResolve() {
++        Jenkins existing = Jenkins.getInstanceOrNull();
++        if (existing != null && existing != this) {
++            throw new IllegalStateException(
++                    "A Jenkins singleton already exists; refusing to deserialize a second Jenkins instance."
++                    + " This is likely an attempted exploit via a forged configuration document.");
++        }
+         if (jdks == null) {
+             jdks = new ArrayList<>();
+         }
+@@ -1077,6 +1083,16 @@ public class Jenkins extends AbstractCIBase implements DirectlyModifiableTopLeve
+         return this;
+     }
+ 
++    protected Object writeReplace() {
++        return XmlFile.replaceIfNotAtTopLevel(this, Replacer::new);
++    }
++
++    private static class Replacer {
++        private Object readResolve() {
++            return Jenkins.get();
++        }
++    }
++
+     /**
+      * Retrieve the proxy configuration.
+      *
+diff --git a/test/src/test/java/hudson/model/RunActionTest.java b/test/src/test/java/hudson/model/RunActionTest.java
+index 2c0d4a76b5..8b245a2ffa 100644
+--- a/test/src/test/java/hudson/model/RunActionTest.java
++++ b/test/src/test/java/hudson/model/RunActionTest.java
+@@ -26,14 +26,18 @@ package hudson.model;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.hasProperty;
+ import static org.hamcrest.Matchers.not;
+-import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.jvnet.hudson.test.LogRecorder.recorded;
+ 
+ import hudson.XmlFile;
+ import java.io.File;
++import java.util.logging.Level;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.extension.RegisterExtension;
+ import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.LogRecorder;
+ import org.jvnet.hudson.test.junit.jupiter.JenkinsSessionExtension;
+ 
+ class RunActionTest {
+@@ -55,8 +59,19 @@ class RunActionTest {
+                 assertThat(text, containsString("<id>p#1</id>"));
+         });
+         sessions.then(j -> {
+-                FreeStyleProject p = j.jenkins.getItemByFullName("p", FreeStyleProject.class);
+-                assertEquals(p.getBuildByNumber(1), p.getBuildByNumber(2).getAction(BadAction.class).owner);
++            FreeStyleProject p = j.jenkins.getItemByFullName("p", FreeStyleProject.class);
++            try (LogRecorder recorder = new LogRecorder()) {
++                recorder.record(RunMap.class, Level.WARNING);
++                recorder.capture(5);
++                assertNull(p.getBuildByNumber(2));
++                assertThat(recorder, recorded(
++                        Level.WARNING,
++                        containsString("could not load"),
++                        hasProperty("cause",
++                                hasProperty("message",
++                                        containsString("Refusing to unmarshal PersistenceRoot subtype 'hudson.model.FreeStyleBuild' into field 'owner' in 'hudson.model.RunActionTest$BadAction'. " +
++                                                "PersistenceRoot objects are document roots and must not appear as nested field values.")))));
++            }
+         });
+     }
+ 
+diff --git a/test/src/test/java/hudson/model/ViewTest.java b/test/src/test/java/hudson/model/ViewTest.java
+index 8cc90e3a9b..1a66f81e9c 100644
+--- a/test/src/test/java/hudson/model/ViewTest.java
++++ b/test/src/test/java/hudson/model/ViewTest.java
+@@ -33,6 +33,7 @@ import static org.hamcrest.Matchers.instanceOf;
+ import static org.hamcrest.Matchers.is;
+ import static org.hamcrest.Matchers.not;
+ import static org.hamcrest.Matchers.nullValue;
++import static org.hamcrest.Matchers.sameInstance;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertNotNull;
+@@ -223,9 +224,14 @@ class ViewTest {
+     @Issue("JENKINS-9367")
+     @Test
+     void persistence() throws Exception {
+-        ListView view = listView("foo");
+-
+-        ListView v = (ListView) Jenkins.XSTREAM.fromXML(Jenkins.XSTREAM.toXML(view));
++        final String viewName = "foo";
++        ListView view = listView(viewName);
++
++        j.jenkins.save();
++        assertThat(view, sameInstance(j.jenkins.getView(viewName)));
++        j.jenkins.reload();
++        final View v = j.jenkins.getView(viewName);
++        assertThat(view, not(sameInstance(v)));
+         System.out.println(v.getProperties());
+         assertNotNull(v.getProperties());
+     }
+diff --git a/test/src/test/java/jenkins/security/Security3972QueueRestartTest.java b/test/src/test/java/jenkins/security/Security3972QueueRestartTest.java
+new file mode 100644
+index 0000000000..afe98e48cc
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security3972QueueRestartTest.java
+@@ -0,0 +1,49 @@
++package jenkins.security;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++
++import hudson.model.FreeStyleProject;
++import hudson.model.Queue;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.RegisterExtension;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.junit.jupiter.JenkinsSessionExtension;
++
++@Issue("SECURITY-3972")
++class Security3972QueueRestartTest {
++
++    @RegisterExtension
++    private final JenkinsSessionExtension sessions = new JenkinsSessionExtension();
++
++    @Test
++    void queueItemSurvivesRestartWhenTaskIsFreeStyleProject() throws Throwable {
++        sessions.then(j -> {
++            FreeStyleProject p = j.createFreeStyleProject("p");
++            j.jenkins.getQueue().schedule(p, 3600);
++            assertFalse(j.jenkins.getQueue().isEmpty(), "queue must be non-empty before restart");
++            j.jenkins.getQueue().save();
++        });
++
++        sessions.then(j -> {
++            FreeStyleProject p = j.jenkins.getItemByFullName("p", FreeStyleProject.class);
++            assertNotNull(p, "project must survive restart");
++            assertFalse(j.jenkins.getQueue().isEmpty(), "queue item must survive restart");
++        });
++    }
++
++    @Test
++    void queueXstreamRoundTripWithFreeStyleProjectTask() throws Throwable {
++        sessions.then(j -> {
++            j.jenkins.setNumExecutors(0);
++            FreeStyleProject p = j.createFreeStyleProject("p");
++            j.jenkins.getQueue().schedule(p, 0);
++            assertFalse(j.jenkins.getQueue().isEmpty());
++            java.io.File queueFile = new java.io.File(j.jenkins.getRootDir(), "queue.xml");
++            j.jenkins.getQueue().save();
++            Object loaded = new hudson.XmlFile(Queue.XSTREAM, queueFile).read();
++            assertNotNull(loaded, "Queue.XSTREAM must be able to reload a queue with a FreeStyleProject task");
++        });
++    }
++
++}
+diff --git a/test/src/test/java/jenkins/security/Security3972Test.java b/test/src/test/java/jenkins/security/Security3972Test.java
+new file mode 100644
+index 0000000000..8f610eec22
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security3972Test.java
+@@ -0,0 +1,151 @@
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.nullValue;
++import static org.hamcrest.Matchers.sameInstance;
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.jvnet.hudson.test.LogRecorder.recorded;
++
++import hudson.model.FreeStyleProject;
++import hudson.model.InvisibleAction;
++import hudson.model.Item;
++import hudson.model.Items;
++import hudson.model.JobProperty;
++import hudson.model.Run;
++import hudson.util.RobustReflectionConverter;
++import java.net.URI;
++import java.util.logging.Level;
++import jenkins.model.Jenkins;
++import jenkins.model.RunAction2;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.Page;
++import org.htmlunit.WebRequest;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.LogRecorder;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++@Issue("SECURITY-3972")
++class Security3972Test {
++
++    // See XML_WITH_FREESTYLEBUILD
++    static class BuildAction extends InvisibleAction implements RunAction2 {
++        private Run<?, ?> run;
++
++        @Override
++        public void onAttached(Run<?, ?> r) {
++            this.run = r;
++        }
++
++        @Override
++        public void onLoad(Run<?, ?> r) {
++            this.run = r;
++        }
++    }
++
++    private static final String XML_WITH_FREESTYLEBUILD = """
++            <?xml version='1.1' encoding='UTF-8'?>
++            <project>
++              <actions>
++                <jenkins.security.Security3972Test_-BuildAction>
++                  <run class="hudson.model.FreeStyleBuild">
++                  </run>
++                </jenkins.security.Security3972Test_-BuildAction>
++              </actions>
++            </project>""";
++
++    @Test
++    void rejectConfigXmlWithNestedPersistenceRoot(JenkinsRule j) throws Exception {
++        j.jenkins.setCrumbIssuer(null);
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ).everywhere().to("attacker")
++                .grant(Item.READ, Item.CONFIGURE).everywhere().to("attacker")
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin"));
++
++        j.createFreeStyleProject("carrier");
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().withBasicApiToken("attacker").withThrowExceptionOnFailingStatusCode(false);
++             LogRecorder logRecorder = new LogRecorder().record(RobustReflectionConverter.class, Level.WARNING).capture(10)) {
++
++            WebRequest configRequest = new WebRequest(URI.create(wc.getContextPath() + "job/carrier/config.xml").toURL(), HttpMethod.POST);
++            configRequest.setAdditionalHeader("Content-Type", "application/xml");
++            configRequest.setRequestBody(XML_WITH_FREESTYLEBUILD);
++            Page configResult = wc.getPage(configRequest);
++
++            assertThat(configResult.getWebResponse().getStatusCode(), is(500));
++
++            assertThat(logRecorder, recorded(containsString("Refusing to unmarshal PersistenceRoot subtype 'hudson.model.FreeStyleBuild' into field 'run' in 'jenkins.security.Security3972Test$BuildAction'.")));
++        }
++    }
++
++    @Test
++    void runReplacerSurvivesRoundTrip(JenkinsRule j) throws Exception {
++        FreeStyleProject project = j.createFreeStyleProject("p");
++        Run<?, ?> build = j.buildAndAssertSuccess(project);
++        String externalizableId = build.getExternalizableId(); // "p#1"
++
++        // This is the XML form produced by Run.writeReplace() when a Run is a field in another object.
++        String xml = "<?xml version='1.1' encoding='UTF-8'?>\n"
++                + "<jenkins.security.Security3972Test_-Holder>\n"
++                + "  <run resolves-to=\"hudson.model.Run$Replacer\">\n"
++                + "    <id>" + externalizableId + "</id>\n"
++                + "  </run>\n"
++                + "</jenkins.security.Security3972Test_-Holder>";
++
++        Holder holder = (Holder) Items.XSTREAM2.fromXML(xml);
++
++        assertThat(holder.run, sameInstance(build));
++    }
++
++    @Test
++    void referenceWithClassOnlyLooksAtReference(JenkinsRule j) throws Exception {
++        // XML where the <run> element has BOTH class= naming a PersistenceRoot AND reference=.
++        // The reference path "../.." points back to the root Holder element.
++        // XStream will use reference= to look up the Holder, then discard it because Holder is
++        // not assignable to Run — the field ends up null.  Our guard must not throw.
++        String xml = "<?xml version='1.1' encoding='UTF-8'?>\n"
++                + "<jenkins.security.Security3972Test_-Holder>\n"
++                + "  <run class=\"jenkins.model.Jenkins\" reference=\"..\">\n"
++                + "  </run>\n"
++                + "</jenkins.security.Security3972Test_-Holder>";
++
++        Holder holder = assertDoesNotThrow(() -> (Holder) Items.XSTREAM2.fromXML(xml),
++                "Guard must not fire when reference= is present — XStream resolves the reference, not class=");
++
++        // The referenced Holder is type-incompatible with Run, so XStream drops the value.
++        // Crucially, no new Jenkins instance was constructed from the class= attribute.
++        assertThat("No PersistenceRoot instance must have been constructed from the class= attribute",
++                holder.run, nullValue());
++    }
++
++    static class Holder {
++        public Run<?, ?> run;
++    }
++
++    @Test
++    void jenkinsReplacerWorks(JenkinsRule j) throws Exception {
++        final FreeStyleProject project = j.createFreeStyleProject();
++        project.addProperty(new JenkinsProperty(j.jenkins));
++        project.save();
++        final String configXml = project.getConfigFile().asString();
++        assertThat(configXml, containsString("<propertyJenkins class=\"hudson.model.Hudson\" resolves-to=\"jenkins.model.Jenkins$Replacer\"/>"));
++    }
++
++    /**
++     * Have a Jenkins reference somewhere that's not stored in a Jenkins root config.xml
++     */
++    public static class JenkinsProperty extends JobProperty<FreeStyleProject> {
++
++        private final Jenkins propertyJenkins;
++
++        JenkinsProperty(Jenkins jenkins) {
++            this.propertyJenkins = jenkins;
++        }
++    }
++}
+-- 
+2.43.0
+

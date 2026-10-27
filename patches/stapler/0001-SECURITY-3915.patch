@@ -1,0 +1,35 @@
+From 9e8200a9a29959517ab0f47e8b66b993c4bdbe1a Mon Sep 17 00:00:00 2001
+From: Kevin-CB <kguerroudj@cloudbees.com>
+Date: Tue, 18 Aug 2026 16:22:08 +0200
+Subject: [PATCH 1/4] SECURITY-3915
+
+(cherry picked from commit f76c715d7e39b93c67a8c9456372a206f4c81efe)
+---
+ core/src/main/java/org/kohsuke/stapler/RequestImpl.java | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/core/src/main/java/org/kohsuke/stapler/RequestImpl.java b/core/src/main/java/org/kohsuke/stapler/RequestImpl.java
+index 51c288b6..52d9157e 100644
+--- a/core/src/main/java/org/kohsuke/stapler/RequestImpl.java
++++ b/core/src/main/java/org/kohsuke/stapler/RequestImpl.java
+@@ -881,7 +881,7 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
+ 
+                             String className = e.getKey().replace('-', '.'); // decode JSON-safe class name escaping
+                             try {
+-                                Class<?> itemType = cl.loadClass(className);
++                                Class<?> itemType = cl.loadClass(className).asSubclass(l.itemType);
+                                 if (v instanceof JSONObject) {
+                                     l.add(bindJSON(itemType, (JSONObject) v));
+                                 }
+@@ -890,7 +890,7 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
+                                         l.add(i);
+                                     }
+                                 }
+-                            } catch (ClassNotFoundException e1) {
++                            } catch (ClassNotFoundException | ClassCastException e1) {
+                                 // ignore unrecognized element
+                             }
+                         }
+-- 
+2.43.0
+

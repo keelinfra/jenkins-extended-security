@@ -1,0 +1,84 @@
+From 4040c329a55ffd8e569b92a7337f56bcb136ac16 Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 18:30:00 +0000
+Subject: [PATCH 5/5] Generate .stapler files for same-named methods in different
+ classes
+
+Not a security fix and not an upstream commit (the same code is on Stapler
+master as of 2026-10-27).
+
+QueryParameterAnnotationProcessor remembered written methods by simple name
+only, so a doAct(...) in one class could stop the doAct(...) of another class
+from getting its .stapler file. Which one won depended on HashSet order, so
+jenkins-core jars from the same source had 201 to 204 .stapler files and the
+WAR was not reproducible. Stapler reads parameter names via reflection first
+(Jenkins compiles with -parameters), so the missing files had no effect at
+runtime.
+---
+ .../QueryParameterAnnotationProcessor.java    |  7 ++++--
+ ...QueryParameterAnnotationProcessorTest.java | 24 +++++++++++++++++++
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/core/src/main/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessor.java b/core/src/main/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessor.java
+index 52fcbfc..cb15c1f 100644
+--- a/core/src/main/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessor.java
++++ b/core/src/main/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessor.java
+@@ -45,7 +45,10 @@ public class QueryParameterAnnotationProcessor extends AbstractProcessorImpl {
+                 String paramNames = m.getParameters().stream()
+                         .map(VariableElement::getSimpleName)
+                         .collect(Collectors.joining(","));
+-                String existing = output.get(m.getSimpleName().toString());
++                // Key by class and method name. Keying by method name alone made methods with the same
++                // name in different classes skip each other, depending on HashSet order.
++                String key = ((TypeElement) m.getEnclosingElement()).getQualifiedName() + "#" + m.getSimpleName();
++                String existing = output.get(key);
+                 /*
+                  * Allow multiple methods to have the same name but different argument types as long as the arguments
+                  * have the same names. This allows deprecated StaplerRequest/StaplerResponse methods to coexist
+@@ -53,7 +56,7 @@ public class QueryParameterAnnotationProcessor extends AbstractProcessorImpl {
+                  */
+                 if (existing == null || !existing.equals(paramNames)) {
+                     write(paramNames, m);
+-                    output.put(m.getSimpleName().toString(), paramNames);
++                    output.put(key, paramNames);
+                 }
+             }
+         } catch (IOException e) {
+diff --git a/core/src/test/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessorTest.java b/core/src/test/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessorTest.java
+index fb666bf..d2a0746 100644
+--- a/core/src/test/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessorTest.java
++++ b/core/src/test/java/org/kohsuke/stapler/jsr269/QueryParameterAnnotationProcessorTest.java
+@@ -64,6 +64,30 @@ class QueryParameterAnnotationProcessorTest {
+         assertEquals("req,rsp,delay", Utils.getGeneratedResource(results.sources, "some/pkg/Stuff/doBuild.stapler"));
+     }
+ 
++    @Inline(
++            name = "some.pkg.Stuff",
++            source = {
++                "package some.pkg;",
++                "import org.kohsuke.stapler.QueryParameter;",
++                "public class Stuff {",
++                "  public void doAct(@QueryParameter String no) {}",
++                "  public static class Other {",
++                "    public void doAct(@QueryParameter String no) {}",
++                "  }",
++                "}"
++            })
++    @Test
++    void sameMethodNameInTwoClasses(Results results) {
++        Set<String> diagnostics = results.diagnostics.stream()
++                .map(d -> d.getMessage(Locale.ENGLISH))
++                .collect(Collectors.toSet());
++        assertEquals(
++                Set.of("Generating some/pkg/Stuff/doAct.stapler", "Generating some/pkg/Stuff/Other/doAct.stapler"),
++                diagnostics);
++        assertEquals("no", Utils.getGeneratedResource(results.sources, "some/pkg/Stuff/doAct.stapler"));
++        assertEquals("no", Utils.getGeneratedResource(results.sources, "some/pkg/Stuff/Other/doAct.stapler"));
++    }
++
+     // TODO nested classes use qualified rather than binary name
+ 
+ }
+-- 
+2.43.0
+

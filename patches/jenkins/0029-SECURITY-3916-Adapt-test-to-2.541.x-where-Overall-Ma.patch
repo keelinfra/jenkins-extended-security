@@ -1,0 +1,51 @@
+From d0bb0d1d9b07aa5619dd3f99fcd9918d289b8c3a Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 08:57:45 +0000
+Subject: [PATCH 29/30] [SECURITY-3916] Adapt test to 2.541.x, where
+ Overall/Manage is disabled by default
+
+Adaptation, not an upstream commit. The fix itself is unchanged. On 2.541.x
+the Overall/Manage permission is off by default (jenkins.security.ManagePermission),
+so the test grants Overall/Administer instead.
+
+---
+ test/src/test/java/jenkins/model/Security3916Test.java | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/test/src/test/java/jenkins/model/Security3916Test.java b/test/src/test/java/jenkins/model/Security3916Test.java
+index 13617fc01e..bde3c6e183 100644
+--- a/test/src/test/java/jenkins/model/Security3916Test.java
++++ b/test/src/test/java/jenkins/model/Security3916Test.java
+@@ -70,7 +70,8 @@ class Security3916Test {
+ 
+         GlobalMatrixAuthorizationStrategy auth = new GlobalMatrixAuthorizationStrategy();
+         auth.add(Jenkins.READ, "manager");
+-        auth.add(Jenkins.MANAGE, "manager");
++        // 2.541.x: Overall/Manage is off by default (jenkins.security.ManagePermission), so use Administer here
++        auth.add(Jenkins.ADMINISTER, "manager");
+         j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+         j.jenkins.setAuthorizationStrategy(auth);
+         j.jenkins.setCrumbIssuer(null);
+@@ -95,7 +96,8 @@ class Security3916Test {
+     void nonExistentClassIsRejected() throws Exception {
+         GlobalMatrixAuthorizationStrategy auth = new GlobalMatrixAuthorizationStrategy();
+         auth.add(Jenkins.READ, "manager");
+-        auth.add(Jenkins.MANAGE, "manager");
++        // 2.541.x: Overall/Manage is off by default (jenkins.security.ManagePermission), so use Administer here
++        auth.add(Jenkins.ADMINISTER, "manager");
+         j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+         j.jenkins.setAuthorizationStrategy(auth);
+         j.jenkins.setCrumbIssuer(null);
+@@ -120,7 +122,8 @@ class Security3916Test {
+     void validNamingStrategyIsAccepted() throws Exception {
+         GlobalMatrixAuthorizationStrategy auth = new GlobalMatrixAuthorizationStrategy();
+         auth.add(Jenkins.READ, "manager");
+-        auth.add(Jenkins.MANAGE, "manager");
++        // 2.541.x: Overall/Manage is off by default (jenkins.security.ManagePermission), so use Administer here
++        auth.add(Jenkins.ADMINISTER, "manager");
+         j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+         j.jenkins.setAuthorizationStrategy(auth);
+         j.jenkins.setCrumbIssuer(null);
+-- 
+2.43.0
+
