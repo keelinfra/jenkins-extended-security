@@ -22,13 +22,13 @@ work=$(mkdir -p "${1:-$here/work}" && cd "${1:-$here/work}" && pwd)
 mvn_opts=(-B -ntp -DskipTests -Dspotbugs.skip -Dspotless.check.skip=true -Denforcer.skip -Dlicense.skip=true)
 
 checkout() { # repo tag dir patches
-  rm -rf "$work/$3"
+  rm -rf "${work:?}/${3:?}"
   git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "https://github.com/$1.git" "$work/$3"
   # Fixed committer and dates give the same commit ids on every machine. The WAR records
   # the commit id (Implementation-Build), so this keeps the build reproducible.
   git -C "$work/$3" -c user.name=build -c user.email=build@localhost -c commit.gpgsign=false \
     am -q --committer-date-is-author-date "$here/patches/$4"/*.patch
-  echo "$3: $2 + $(ls "$here/patches/$4"/*.patch | wc -l) patches"
+  echo "$3: $2 + $(find "$here/patches/$4" -name '*.patch' | wc -l) patches"
 }
 
 checkout jenkinsci/remoting "$REMOTING_TAG" remoting remoting
@@ -53,7 +53,7 @@ stamp() { git -C "$work/$1" log -1 --format=%cI; }
 cp "$work/jenkins/war/target/jenkins.war" "$work/jenkins.war"
 (cd "$work" && sha256sum jenkins.war > sha256sums.txt && cat sha256sums.txt)
 { # what this WAR was built from and with
-  echo "jenkins: $JENKINS_TAG + $(ls "$here/patches/jenkins"/*.patch | wc -l) patches"
+  echo "jenkins: $JENKINS_TAG + $(find "$here/patches/jenkins" -name '*.patch' | wc -l) patches"
   echo "remoting: $REMOTING_TAG -> $REMOTING_VERSION"
   echo "stapler: $STAPLER_TAG -> $STAPLER_VERSION"
   echo "patches: $(git -C "$here" rev-parse HEAD 2>/dev/null || echo unknown)"

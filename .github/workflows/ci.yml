@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: ['stable-*']
+    paths-ignore: ['**.md', 'LICENSE']
+  pull_request:
+    branches: ['stable-*']
+    paths-ignore: ['**.md', 'LICENSE']
+  workflow_dispatch:
+    inputs:
+      plugins:
+        description: Plugin list for the boot test
+        type: choice
+        options: [test/plugins-top100.txt, test/plugins-top300.txt]
+        default: test/plugins-top100.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SYFT_VERSION: 1.54.1
+  SYFT_SHA256: c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: shellcheck build.sh test/*.sh
+
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write      # provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: build.sh
+      - run: ./build.sh
+      - name: SBOM of the WAR (CycloneDX, Syft from its own release, checksum verified)
+        run: |
+          cd "$RUNNER_TEMP"
+          tgz=syft_${SYFT_VERSION}_linux_amd64.tar.gz
+          curl -fsSLO "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/$tgz"
+          echo "$SYFT_SHA256  $tgz" | sha256sum -c
+          tar xzf "$tgz" syft
+          ./syft scan "file:$GITHUB_WORKSPACE/work/jenkins.war" -q \
+            -o "cyclonedx-json=$GITHUB_WORKSPACE/work/jenkins.war.cdx.json"
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: work/jenkins.war
+      - name: Attest SBOM
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: work/jenkins.war
+          sbom-path: work/jenkins.war.cdx.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: jenkins-war
+          path: |
+            work/jenkins.war
+            work/jenkins.war.cdx.json
+            work/sha256sums.txt
+            work/build-info.txt
+          retention-days: 30
+
+  reproducible:
+    # Same patches on a fresh runner without the Maven cache must give the same WAR.
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: jenkins-war
+          path: first
+      - run: ./build.sh
+      - run: cd work && sha256sum -c ../first/sha256sums.txt
+
+  tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [17, 21]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+          cache-dependency-path: build.sh
+      - run: ./build.sh
+      - run: test/run-tests.sh
+
+  plugin-boot:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [17, 21]   # the controller JVM
+    env:
+      PLUGINS: ${{ inputs.plugins || 'test/plugins-top100.txt' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: jenkins-war
+          path: work
+      - name: Download stock 2.541.3
+        run: |
+          curl -fsSL -o stock.war https://get.jenkins.io/war-stable/2.541.3/jenkins.war
+          echo "0000addfa8722963164137a4e0e60abc227d9d60710c4deb19481f9a751cf512  stock.war" | sha256sum -c
+      - run: test/war-diff.sh stock.war work/jenkins.war
+      - run: test/plugin-boot.sh stock.war "$PLUGINS" work/boot-stock
+      - run: test/plugin-boot.sh work/jenkins.war "$PLUGINS" work/boot-patched
+      - name: Plugin versions match stock
+        run: diff work/boot-stock/plugin-versions.txt work/boot-patched/plugin-versions.txt
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: plugin-boot-logs-java${{ matrix.java }}
+          path: |
+            work/boot-*/*.log
+            work/boot-*/smoke-console.txt
+          retention-days: 7

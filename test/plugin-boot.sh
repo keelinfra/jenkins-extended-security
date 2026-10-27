@@ -8,7 +8,7 @@
 #
 # Run it on the stock 2.541.3 WAR and on the patched one. Both get the same plugin
 # versions (the newest that support 2.541.3), so the results should match.
-# Needs: JDK 17 or 21, curl, network access to github.com and updates.jenkins.io.
+# Needs: JDK 17 or 21, curl, unzip, network access to github.com and updates.jenkins.io.
 set -euo pipefail
 
 PIM_VERSION=2.15.0
@@ -36,6 +36,11 @@ echo "$PIM_SHA256  $pim" | sha256sum -c --quiet
 java -jar "$pim" --war "$war" --jenkins-version 2.541.3 --plugin-file "$list" \
   --plugin-download-directory "$home/plugins" > "$work/plugins.log" 2>&1 \
   || { tail -20 "$work/plugins.log" >&2; exit 1; }
+
+for f in "$home"/plugins/*.jpi; do
+  printf '%s %s\n' "$(basename "$f" .jpi)" \
+    "$(unzip -p "$f" META-INF/MANIFEST.MF | sed -n 's/^Plugin-Version: //p' | tr -d '\r')"
+done > "$work/plugin-versions.txt"
 
 # 3. On startup, add an inbound agent and a Pipeline that runs on it.
 cat > "$home/init.groovy.d/smoke.groovy" <<'GROOVY'
@@ -93,7 +98,7 @@ if [ "$up" = yes ]; then
   curl -s "$url/job/smoke/1/consoleText" > "$work/smoke-console.txt" || true
 fi
 
-plugins=$(ls "$home/plugins" | grep -c '\.jpi$' || true)
+plugins=$(find "$home/plugins" -name '*.jpi' | wc -l)
 failed=$(grep -c 'Failed Loading plugin' "$log" || true)
 severe=$(grep -c 'SEVERE' "$log" || true)
 echo "war=$(basename "$war") plugins=$plugins up=$up secs=$secs login=$login failedLoading=$failed severe=$severe pipeline=$result"

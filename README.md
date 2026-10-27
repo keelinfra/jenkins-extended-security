@@ -48,6 +48,22 @@ Run `plugin-boot.sh` on the [stock 2.541.3 WAR](https://get.jenkins.io/war-stabl
 
 The full upstream test suite and the Acceptance Test Harness are not run yet.
 
+## CI
+
+Every push and pull request to a `stable-*` branch runs [CI](.github/workflows/ci.yml):
+
+- `shellcheck` on the scripts.
+- The build on JDK 21, plus a CycloneDX SBOM of the WAR made with [Syft](https://github.com/anchore/syft). The SBOM covers everything inside the WAR, including Jetty and the bundled detached plugins.
+- A second build on a fresh runner without the Maven cache. Its sha256 must match the first.
+- `test/run-tests.sh` on JDK 17 and 21.
+- `test/war-diff.sh` and `test/plugin-boot.sh`, on the stock 2.541.3 WAR and on ours, with Java 17 and 21 as the controller JVM. Both must get the same plugin versions.
+
+Builds from pushes get [build provenance and SBOM attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations). The WAR stays a workflow artifact for 30 days so you can compare it with your own build. It is not a release. To check a WAR from CI:
+
+```sh
+gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
+```
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for where to report problems.
