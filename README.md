@@ -1,4 +1,19 @@
+<a href="https://keelinfra.io">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"
+            srcset="https://raw.githubusercontent.com/keelinfra/.github/main/assets/wordmark-dark.svg">
+    <img alt="keelinfra" width="280"
+         src="https://raw.githubusercontent.com/keelinfra/.github/main/assets/wordmark-light.svg">
+  </picture>
+</a>
+
 # Extended Security for Jenkins 2.541.x
+
+[![CI](https://github.com/keelinfra/jenkins-extended-security/actions/workflows/ci.yml/badge.svg?branch=stable-2.541)](https://github.com/keelinfra/jenkins-extended-security/actions/workflows/ci.yml?query=branch%3Astable-2.541)
+[![Base](https://img.shields.io/badge/base-Jenkins%202.541.3-blue)](#whats-in-it)
+[![Controller Java](https://img.shields.io/badge/controller%20Java-17%20%7C%2021-blue)](#test)
+[![Advisories](https://img.shields.io/badge/advisories-up%20to%202026--09--02-blue)](COVERAGE.md)
+[![License: MIT, BSD-2-Clause parts](https://img.shields.io/badge/license-MIT%20%2B%20BSD--2--Clause%20parts-green)](#license)
 
 Patches that apply the core security fixes released after Jenkins 2.541.3 to 2.541.3, the last LTS that runs on Java 17, plus a script to build the WAR from them.
 
