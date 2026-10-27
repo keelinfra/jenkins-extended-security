@@ -70,4 +70,12 @@ See [SECURITY.md](SECURITY.md) for where to report problems.
 
 ## License
 
-The patches are taken from Jenkins, Remoting and Stapler, which are MIT-licensed. The scripts in this repository are MIT-licensed too.
+The patches keep the license of the project they come from, with that project's copyright notice:
+
+| Patches | License |
+| --- | --- |
+| `patches/jenkins` | MIT, [LICENSES/jenkins-MIT.txt](LICENSES/jenkins-MIT.txt) |
+| `patches/remoting` | MIT, [LICENSES/remoting-MIT.md](LICENSES/remoting-MIT.md) and [NOTICE](LICENSES/remoting-NOTICE) |
+| `patches/stapler` | BSD 2-Clause, [LICENSES/stapler-BSD-2-Clause.txt](LICENSES/stapler-BSD-2-Clause.txt) |
+
+Everything else (scripts, tests, workflows, docs) is MIT, see [LICENSE](LICENSE).
