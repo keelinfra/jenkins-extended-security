@@ -129,6 +129,7 @@ jobs:
         java: [17, 21]   # the controller JVM
     env:
       PLUGINS: ${{ inputs.plugins || 'test/plugins-top100.txt' }}
+      PLUGIN_CACHE: ${{ github.workspace }}/work/plugin-cache   # stock and patched runs share one download
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

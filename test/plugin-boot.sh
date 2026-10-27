@@ -5,6 +5,8 @@
 #   PLUGIN_LIST  default: test/plugins-top100.txt (test/plugins-top300.txt for the bigger set)
 #   WORKDIR      default: ./work/plugin-boot-<name of the WAR file>
 #   PORT         environment variable, default 8089
+#   PLUGIN_CACHE environment variable, a directory to download plugins into and reuse
+#                between runs (use one per plugin list)
 #
 # Run it on the stock 2.541.3 WAR and on the patched one. Both get the same plugin
 # versions (the newest that support 2.541.3), so the results should match.
@@ -33,9 +35,21 @@ fi
 echo "$PIM_SHA256  $pim" | sha256sum -c --quiet
 
 # 2. Resolve and download plugins for 2.541.3 (pinned, so the -k1 suffix can't change the result).
-java -jar "$pim" --war "$war" --jenkins-version 2.541.3 --plugin-file "$list" \
-  --plugin-download-directory "$home/plugins" > "$work/plugins.log" 2>&1 \
-  || { tail -20 "$work/plugins.log" >&2; exit 1; }
+# The update center mirrors sometimes drop connections, so retry. Plugins already in
+# $cache are kept, so a second run with the same PLUGIN_CACHE downloads nothing.
+cache=${PLUGIN_CACHE:-$work/plugin-download}
+mkdir -p "$cache"
+for attempt in 1 2 3; do
+  if java -jar "$pim" --war "$war" --jenkins-version 2.541.3 --plugin-file "$list" \
+       --plugin-download-directory "$cache" > "$work/plugins.log" 2>&1; then
+    break
+  fi
+  if [ "$attempt" = 3 ]; then tail -20 "$work/plugins.log" >&2; exit 1; fi
+  echo "plugin download failed (attempt $attempt), retrying" >&2
+  sleep 15
+done
+mkdir -p "$home/plugins"
+cp "$cache"/*.jpi "$home/plugins/"
 
 for f in "$home"/plugins/*.jpi; do
   printf '%s %s\n' "$(basename "$f" .jpi)" \
