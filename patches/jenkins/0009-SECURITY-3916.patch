@@ -1,0 +1,196 @@
+From 5cc1382b2d5ee5b9ef4f41cf8aa07f83cbfee1bd Mon Sep 17 00:00:00 2001
+From: Kevin-CB <kguerroudj@cloudbees.com>
+Date: Wed, 22 Jul 2026 20:53:06 +0000
+Subject: [PATCH 09/30] [SECURITY-3916]
+
+(cherry picked from commit ae40f05823076616360a1bdcce6f43bd4ed04ca8)
+---
+ ...balProjectNamingStrategyConfiguration.java |   6 +-
+ .../java/jenkins/model/Security3916Test.java  | 155 ++++++++++++++++++
+ 2 files changed, 159 insertions(+), 2 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/model/Security3916Test.java
+
+diff --git a/core/src/main/java/jenkins/model/GlobalProjectNamingStrategyConfiguration.java b/core/src/main/java/jenkins/model/GlobalProjectNamingStrategyConfiguration.java
+index 35c3cc3193..64e95fceb6 100644
+--- a/core/src/main/java/jenkins/model/GlobalProjectNamingStrategyConfiguration.java
++++ b/core/src/main/java/jenkins/model/GlobalProjectNamingStrategyConfiguration.java
+@@ -48,11 +48,13 @@ public class GlobalProjectNamingStrategyConfiguration extends GlobalConfiguratio
+             final JSONObject strategyObject = optJSONObject.getJSONObject("namingStrategy");
+             final String className = strategyObject.getString("$class");
+             try {
+-                Class clazz = Class.forName(className, true, j.getPluginManager().uberClassLoader);
+-                final ProjectNamingStrategy strategy = (ProjectNamingStrategy) req.bindJSON(clazz, strategyObject);
++                Class<? extends ProjectNamingStrategy> clazz = Class.forName(className, true, j.getPluginManager().uberClassLoader).asSubclass(ProjectNamingStrategy.class);
++                final ProjectNamingStrategy strategy = req.bindJSON(clazz, strategyObject);
+                 j.setProjectNamingStrategy(strategy);
+             } catch (ClassNotFoundException e) {
+                 throw new FormException(e, "namingStrategy");
++            } catch (ClassCastException e) {
++                throw new FormException(className + " is not a " + ProjectNamingStrategy.class.getName(), e, "namingStrategy");
+             }
+         }
+         if (j.getProjectNamingStrategy() == null) {
+diff --git a/test/src/test/java/jenkins/model/Security3916Test.java b/test/src/test/java/jenkins/model/Security3916Test.java
+new file mode 100644
+index 0000000000..13617fc01e
+--- /dev/null
++++ b/test/src/test/java/jenkins/model/Security3916Test.java
+@@ -0,0 +1,155 @@
++/*
++ * The MIT License
++ *
++ * Copyright (c) 2026, CloudBees, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++package jenkins.model;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.hamcrest.Matchers.is;
++
++import hudson.security.GlobalMatrixAuthorizationStrategy;
++import java.net.URI;
++import java.util.List;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.Page;
++import org.htmlunit.WebRequest;
++import org.htmlunit.util.NameValuePair;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++import org.kohsuke.stapler.DataBoundConstructor;
++
++@Issue("SECURITY-3916")
++@WithJenkins
++class Security3916Test {
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    public static class ArbitraryClass {
++        public static volatile boolean instantiated = false;
++
++        @SuppressWarnings("checkstyle:redundantmodifier")
++        @DataBoundConstructor
++        public ArbitraryClass() {
++            instantiated = true;
++        }
++    }
++
++    @Test
++    void arbitraryClassIsNotInstantiated() throws Exception {
++        ArbitraryClass.instantiated = false;
++
++        GlobalMatrixAuthorizationStrategy auth = new GlobalMatrixAuthorizationStrategy();
++        auth.add(Jenkins.READ, "manager");
++        auth.add(Jenkins.MANAGE, "manager");
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(auth);
++        j.jenkins.setCrumbIssuer(null);
++
++        String json = "{\"jenkins-model-GlobalQuietPeriodConfiguration\":{\"quietPeriod\":\"5\"},"
++                + "\"jenkins-model-GlobalSCMRetryCountConfiguration\":{\"scmCheckoutRetryCount\":0},"
++                + "\"jenkins-model-GlobalProjectNamingStrategyConfiguration\":"
++                + "{\"useProjectNamingStrategy\":{\"namingStrategy\":"
++                + "{\"$class\":\"" + ArbitraryClass.class.getName() + "\"}}}}";
++
++        Page page = submitGlobalConfig(json);
++
++        assertThat(page.getWebResponse().getStatusCode(), is(400));
++        assertThat("arbitrary class must not be instantiated", ArbitraryClass.instantiated, is(false));
++        assertThat(j.jenkins.getProjectNamingStrategy(),
++                instanceOf(ProjectNamingStrategy.DefaultProjectNamingStrategy.class));
++        assertThat(page.getWebResponse().getContentAsString(),
++                containsString(ArbitraryClass.class.getName() + " is not a " + ProjectNamingStrategy.class.getName()));
++    }
++
++    @Test
++    void nonExistentClassIsRejected() throws Exception {
++        GlobalMatrixAuthorizationStrategy auth = new GlobalMatrixAuthorizationStrategy();
++        auth.add(Jenkins.READ, "manager");
++        auth.add(Jenkins.MANAGE, "manager");
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(auth);
++        j.jenkins.setCrumbIssuer(null);
++
++        String json = "{\"jenkins-model-GlobalQuietPeriodConfiguration\":{\"quietPeriod\":\"5\"},"
++                + "\"jenkins-model-GlobalSCMRetryCountConfiguration\":{\"scmCheckoutRetryCount\":0},"
++                + "\"jenkins-model-GlobalProjectNamingStrategyConfiguration\":"
++                + "{\"useProjectNamingStrategy\":{\"namingStrategy\":"
++                + "{\"$class\":\"com.example.DoesNotExist\"}}}}";
++
++        Page page = submitGlobalConfig(json);
++
++        assertThat(page.getWebResponse().getStatusCode(), is(400));
++        assertThat(j.jenkins.getProjectNamingStrategy(),
++                instanceOf(ProjectNamingStrategy.DefaultProjectNamingStrategy.class));
++
++        assertThat(page.getWebResponse().getContentAsString(),
++                containsString("ClassNotFoundException: com.example.DoesNotExist"));
++    }
++
++    @Test
++    void validNamingStrategyIsAccepted() throws Exception {
++        GlobalMatrixAuthorizationStrategy auth = new GlobalMatrixAuthorizationStrategy();
++        auth.add(Jenkins.READ, "manager");
++        auth.add(Jenkins.MANAGE, "manager");
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(auth);
++        j.jenkins.setCrumbIssuer(null);
++
++        String json = "{\"jenkins-model-GlobalQuietPeriodConfiguration\":{\"quietPeriod\":\"5\"},"
++                + "\"jenkins-model-GlobalSCMRetryCountConfiguration\":{\"scmCheckoutRetryCount\":0},"
++                + "\"jenkins-model-GlobalProjectNamingStrategyConfiguration\":"
++                + "{\"useProjectNamingStrategy\":{\"namingStrategy\":"
++                + "{\"$class\":\"jenkins.model.ProjectNamingStrategy$PatternProjectNamingStrategy\","
++                + "\"namePattern\":\"foo.*\",\"description\":\"desc\",\"forceExistingJobs\":false}}}}";
++
++        Page page = submitGlobalConfig(json);
++
++        assertThat(page.getWebResponse().getStatusCode(), is(200));
++        assertThat(j.jenkins.getProjectNamingStrategy(),
++                instanceOf(ProjectNamingStrategy.PatternProjectNamingStrategy.class));
++        ProjectNamingStrategy.PatternProjectNamingStrategy strategy =
++                (ProjectNamingStrategy.PatternProjectNamingStrategy) j.jenkins.getProjectNamingStrategy();
++        assertThat(strategy.getNamePattern(), is("foo.*"));
++    }
++
++    private Page submitGlobalConfig(String json) throws Exception {
++        JenkinsRule.WebClient wc = j.createWebClient()
++                .withThrowExceptionOnFailingStatusCode(false);
++        wc.login("manager");
++
++        WebRequest req = new WebRequest(
++                new URI(wc.getContextPath() + "configSubmit").toURL(), HttpMethod.POST);
++        req.setRequestParameters(List.of(new NameValuePair("json", json)));
++        return wc.getPage(req);
++    }
++}
+-- 
+2.43.0
+

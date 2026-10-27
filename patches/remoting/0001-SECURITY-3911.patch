@@ -1,0 +1,189 @@
+From 5ec32d908e6c572eda876e0bce7eed321acd607f Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Tue, 14 Jul 2026 22:33:18 +0200
+Subject: [PATCH] [SECURITY-3911]
+
+(cherry picked from commit 931d3c99298737be511189298c089f58d61ad2d1)
+---
+ .../remoting/MultiClassLoaderSerializer.java  |   2 +-
+ .../hudson/remoting/ObjectInputStreamEx.java  |   2 +-
+ .../java/hudson/remoting/ClassFilterTest.java | 113 ++++++++++++++++++
+ 3 files changed, 115 insertions(+), 2 deletions(-)
+
+diff --git a/src/main/java/hudson/remoting/MultiClassLoaderSerializer.java b/src/main/java/hudson/remoting/MultiClassLoaderSerializer.java
+index fd609b7a..2794c34e 100644
+--- a/src/main/java/hudson/remoting/MultiClassLoaderSerializer.java
++++ b/src/main/java/hudson/remoting/MultiClassLoaderSerializer.java
+@@ -134,7 +134,7 @@ class MultiClassLoaderSerializer {
+                 channel.classFilter.check(c);
+                 return c;
+             } catch (ClassNotFoundException ex) {
+-                return super.resolveClass(desc);
++                return channel.classFilter.check(super.resolveClass(desc));
+             }
+         }
+ 
+diff --git a/src/main/java/hudson/remoting/ObjectInputStreamEx.java b/src/main/java/hudson/remoting/ObjectInputStreamEx.java
+index e1d4ef48..18be166e 100644
+--- a/src/main/java/hudson/remoting/ObjectInputStreamEx.java
++++ b/src/main/java/hudson/remoting/ObjectInputStreamEx.java
+@@ -61,7 +61,7 @@ public class ObjectInputStreamEx extends ObjectInputStream {
+         try {
+             return filter.check(Class.forName(filter.check(name), false, cl));
+         } catch (ClassNotFoundException ex) {
+-            return super.resolveClass(desc);
++            return filter.check(super.resolveClass(desc));
+         }
+     }
+ 
+diff --git a/src/test/java/hudson/remoting/ClassFilterTest.java b/src/test/java/hudson/remoting/ClassFilterTest.java
+index 2c1f3d2e..381345d7 100644
+--- a/src/test/java/hudson/remoting/ClassFilterTest.java
++++ b/src/test/java/hudson/remoting/ClassFilterTest.java
+@@ -1,5 +1,6 @@
+ package hudson.remoting;
+ 
++import static org.hamcrest.Matchers.is;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+@@ -15,10 +16,13 @@ import java.io.OutputStream;
+ import java.io.PrintWriter;
+ import java.io.Serializable;
+ import java.io.StringWriter;
++import org.hamcrest.MatcherAssert;
+ import org.jenkinsci.remoting.SerializableOnlyOverRemoting;
+ import org.jenkinsci.remoting.nio.NioChannelBuilder;
+ import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
+ 
+ /**
+  * Tests the effect of {@link ClassFilter}.
+@@ -91,6 +95,11 @@ class ClassFilterTest implements Serializable {
+         clearRecord();
+     }
+ 
++    @BeforeEach
++    void beforeEach() {
++        clearRecord();
++    }
++
+     @AfterEach
+     void afterEach() throws Exception {
+         if (runner != null) {
+@@ -225,6 +234,110 @@ class ClassFilterTest implements Serializable {
+         assertEquals("", getAttack());
+     }
+ 
++    @Issue("SECURITY-3911")
++    @Test
++    void multiClassLoaderSerializer_spoofedSystemClassLoader_isRejected() throws Exception {
++        // Filter that approves by name but rejects by class instance — models the real scenario
++        // where the class is not filtered by name but by code location of the Class.
++        ClassFilter classLevelFilter = new ClassFilter() {
++            @Override
++            public boolean isBlacklisted(@NonNull String name) {
++                return false;
++            }
++
++            @Override
++            public boolean isBlacklisted(@NonNull Class<?> c) {
++                return c == Security3911Payload.class;
++            }
++        };
++
++        setUp(new InProcessRunner() {
++            @Override
++            protected ChannelBuilder configureNorth() {
++                return super.configureNorth().withClassFilter(classLevelFilter);
++            }
++        });
++
++        ByteArrayOutputStream baos = new ByteArrayOutputStream();
++        Channel.setCurrent(south);
++        try {
++            ObjectOutputStream oos = new SpoofedTagSystemClassLoaderOutput(south, baos);
++            oos.writeObject(new Security3911Payload());
++            oos.close();
++        } finally {
++            Channel.setCurrent(null);
++        }
++        byte[] maliciousBytes = baos.toByteArray();
++
++        final SecurityException ex = assertThrows(
++                SecurityException.class,
++                () -> UserRequest.deserialize(north, maliciousBytes, getClass().getClassLoader()));
++        assertEquals("", getAttack());
++        MatcherAssert.assertThat(
++                ex.getMessage(),
++                is(
++                        "Rejected: hudson.remoting.ClassFilterTest$Security3911Payload; see https://jenkins.io/redirect/class-filter/"));
++    }
++
++    @Issue("SECURITY-3911")
++    @Test
++    void objectInputStreamEx_emptyClassLoader_fallbackIsFiltered() throws Exception {
++        // A classloader that deliberately cannot resolve Security3911Payload, forcing the
++        // ClassNotFoundException fallback to super.resolveClass(desc).
++        ClassLoader emptyLoader = new ClassLoader(null) {};
++
++        ClassFilter classLevelFilter = new ClassFilter() {
++            @Override
++            public boolean isBlacklisted(@NonNull String name) {
++                return false;
++            }
++
++            @Override
++            public boolean isBlacklisted(@NonNull Class<?> c) {
++                return c == Security3911Payload.class;
++            }
++        };
++
++        ByteArrayOutputStream baos = new ByteArrayOutputStream();
++        try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
++            oos.writeObject(new Security3911Payload());
++        }
++
++        ByteArrayInputStream in = new ByteArrayInputStream(baos.toByteArray());
++        ObjectInputStreamEx ois = new ObjectInputStreamEx(in, emptyLoader, classLevelFilter);
++        assertThrows(SecurityException.class, ois::readObject);
++        assertEquals("", getAttack());
++    }
++
++    private static final class Security3911Payload implements Serializable {
++        private static final long serialVersionUID = 1L;
++
++        private void readObject(ObjectInputStream ois) throws IOException, ClassNotFoundException {
++            // If we reach here, the class filter was bypassed — record the evidence.
++            System.setProperty("attack", "security3911");
++            ois.defaultReadObject();
++        }
++    }
++
++    private static final class SpoofedTagSystemClassLoaderOutput extends ObjectOutputStream {
++        // Cf. MultiClassLoaderSerializer.TAG_SYSTEMCLASSLOADER
++        private static final int TAG_SYSTEMCLASSLOADER = -3;
++
++        SpoofedTagSystemClassLoaderOutput(Channel channel, OutputStream out) throws IOException {
++            super(out);
++        }
++
++        @Override
++        protected void annotateClass(Class<?> c) throws IOException {
++            writeInt(TAG_SYSTEMCLASSLOADER);
++        }
++
++        @Override
++        protected void annotateProxyClass(Class<?> cl) throws IOException {
++            annotateClass(cl);
++        }
++    }
++
+     private String toString(Throwable t) {
+         StringWriter sw = new StringWriter();
+         PrintWriter pw = new PrintWriter(sw);
+-- 
+2.43.0
+

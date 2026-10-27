@@ -1,0 +1,399 @@
+From 7b5f4967536bf8425867675d6798b39e743e057a Mon Sep 17 00:00:00 2001
+From: Daniel Beck <1831569+daniel-beck@users.noreply.github.com>
+Date: Fri, 15 May 2026 01:30:40 +0200
+Subject: [PATCH 01/30] Limit SECURITY-3657 fix to controller JVM (#26709)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* Limit SECURITY-3657 fix to controller JVM
+
+* Update some Javadoc
+
+* iff
+
+* Ordering might matter on Windows?
+
+Claude says: The test builds link.tar with the symlink entry
+(foo → anywhere) before the directory (anywhere/). On Windows,
+when Files.createSymbolicLink creates foo → anywhere and anywhere
+doesn't exist yet, Windows creates a file-type symlink (Windows
+requires you to choose file vs directory symlink type at creation
+time). After anywhere/ is later created as a directory, foo is a
+mismatched file-type symlink.
+
+---------
+
+Co-authored-by: Daniel Beck <daniel-beck@users.noreply.github.com>
+Co-authored-by: Mark Waite <mark.earl.waite@gmail.com>
+(cherry picked from commit 3a903122db83b56ff8cd72a4d947909c6513b40c)
+(cherry picked from commit 7897c6fc681716f2d91dc902cbe8c4b84df812f5)
+---
+ core/src/main/java/hudson/FilePath.java       |  32 ++-
+ .../jenkins/security/Security3657Test.java    |  24 ++-
+ .../jenkins/security/Security3657Test.java    | 189 ++++++++++++++++++
+ 3 files changed, 231 insertions(+), 14 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security3657Test.java
+
+diff --git a/core/src/main/java/hudson/FilePath.java b/core/src/main/java/hudson/FilePath.java
+index 463bb24b11..ac6b3f7d3a 100644
+--- a/core/src/main/java/hudson/FilePath.java
++++ b/core/src/main/java/hudson/FilePath.java
+@@ -127,6 +127,7 @@ import jenkins.agents.ControllerToAgentFileCallable;
+ import jenkins.model.Jenkins;
+ import jenkins.security.MasterToSlaveCallable;
+ import jenkins.util.ContextResettingExecutorService;
++import jenkins.util.JenkinsJVM;
+ import jenkins.util.SystemProperties;
+ import jenkins.util.VirtualFile;
+ import org.apache.commons.fileupload2.core.FileItem;
+@@ -214,13 +215,15 @@ import org.kohsuke.stapler.Stapler;
+ public final class FilePath implements SerializableOnlyOverRemoting {
+ 
+     /**
+-     * Set to {@code true} to disable validation to ensure that we do not attempt to extract paths that may allow determining the path to the destination directory.
++     * Set to {@code true} to disable validation to ensure that we do not attempt to extract paths that may allow determining the path to the destination directory,
++     * or to {@code false} to enable it. If unset, validation will be done if and only if the current JVM is the controller JVM.
+      */
+-    private static /* non-final for script console */ boolean ALLOW_REENTRY_PATH_TRAVERSAL = SystemProperties.getBoolean(FilePath.class.getName() + ".ALLOW_REENTRY_PATH_TRAVERSAL");
++    private static /* non-final for script console */ Boolean ALLOW_REENTRY_PATH_TRAVERSAL = SystemProperties.optBoolean(FilePath.class.getName() + ".ALLOW_REENTRY_PATH_TRAVERSAL");
+     /**
+-     * Set to {@code true} to disable the fix for SECURITY-3657 that prevents path traversal from crafted tar files.
++     * Set to {@code true} to disable prevention of path traversal from crafted tar files,
++     * or to {@code false} to enable it. If unset, validation will be done if and only if the current JVM is the controller JVM.
+      */
+-    private static /* non-final for script console */ boolean ALLOW_UNTAR_SYMLINK_RESOLUTION = SystemProperties.getBoolean(FilePath.class.getName() + ".ALLOW_UNTAR_SYMLINK_RESOLUTION");
++    private static /* non-final for script console */ Boolean ALLOW_UNTAR_SYMLINK_RESOLUTION = SystemProperties.optBoolean(FilePath.class.getName() + ".ALLOW_UNTAR_SYMLINK_RESOLUTION");
+ 
+     public enum DisplayOption implements OpenOption, CopyOption {
+         IGNORE_TMP_DIRS
+@@ -3057,10 +3060,23 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+         readFromTar(name, baseDir, in, Charset.defaultCharset());
+     }
+ 
++    /**
++     * Determines whether to perform additional validation to prevent path traversal during {@link #readFromTar(String, java.io.File, java.io.InputStream, java.nio.charset.Charset)}.
++     *
++     * @param trueIfPermissiveFlag a {@code Boolean} flag that is {@code false} when requiring validation, {@code true} when it should be skipped, and {@code null} when {@link jenkins.util.JenkinsJVM} should determine the need to validate.
++     * @return true if and only if we should check for and prevent path traversals
++     */
++    private static boolean requireReadFromTarPathTraversalValidation(Boolean trueIfPermissiveFlag) {
++        if (trueIfPermissiveFlag == null) {
++            return JenkinsJVM.isJenkinsJVM();
++        }
++        return !trueIfPermissiveFlag;
++    }
++
+     /**
+      * Reads from a tar stream and stores obtained files to the base dir.
+      * Supports large files &gt; 10 GB since 1.627.
+-     * This prohibits any path traversal out of the base dir, as well as writing through any existing symlinks.
++     * On the Jenkins controller JVM this prohibits any path traversal out of the base dir, as well as writing through any existing symlinks.
+      */
+     private static void readFromTar(String name, File baseDir, InputStream in, Charset filenamesEncoding) throws IOException {
+         final File absoluteBaseDir = baseDir.getAbsoluteFile();
+@@ -3069,7 +3085,7 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+             TarEntry te;
+             while ((te = t.getNextEntry()) != null) {
+                 final String entryName = te.getName();
+-                if (!ALLOW_REENTRY_PATH_TRAVERSAL) {
++                if (requireReadFromTarPathTraversalValidation(ALLOW_REENTRY_PATH_TRAVERSAL)) {
+                     if (new File(entryName).toPath().normalize().startsWith(Path.of(".."))) {
+                         // catch relative path that would escape and then enter the destination dir again, like `../../../var/jenkins_home/...`
+                         throw new IOException("Tar " + name + " contains entry that escapes destination directory: " + entryName);
+@@ -3084,7 +3100,7 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+                     throw new IOException("Tar " + name + " contains entry that escapes destination directory: " + entryName);
+                 }
+ 
+-                if (!ALLOW_UNTAR_SYMLINK_RESOLUTION) {
++                if (requireReadFromTarPathTraversalValidation(ALLOW_UNTAR_SYMLINK_RESOLUTION)) {
+                     // getCanonicalFile doesn't follow symlinks on Windows, so do this the hard way: Check each ancestor up to the base dir for whether it's a symlink
+                     File current = parent;
+                     while (current != null && !current.equals(absoluteBaseDir)) {
+@@ -3103,7 +3119,7 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+                     if (te.isSymbolicLink()) {
+                         new FilePath(f).symlinkTo(te.getLinkName(), TaskListener.NULL);
+                     } else {
+-                        if (!ALLOW_UNTAR_SYMLINK_RESOLUTION) {
++                        if (requireReadFromTarPathTraversalValidation(ALLOW_UNTAR_SYMLINK_RESOLUTION)) {
+                             if (Util.isSymlink(f)) {
+                                 throw new IOException("Tar '" + name + "' entry '" + entryName + "' would write through existing symlink: " + f);
+                             }
+diff --git a/core/src/test/java/jenkins/security/Security3657Test.java b/core/src/test/java/jenkins/security/Security3657Test.java
+index e0e35358a0..003f0b41d8 100644
+--- a/core/src/test/java/jenkins/security/Security3657Test.java
++++ b/core/src/test/java/jenkins/security/Security3657Test.java
+@@ -16,15 +16,27 @@ import java.lang.reflect.Field;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.util.List;
+ import org.apache.tools.tar.TarConstants;
+ import org.apache.tools.tar.TarEntry;
+ import org.apache.tools.tar.TarOutputStream;
++import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
+ import org.jvnet.hudson.test.Issue;
+ 
+ public class Security3657Test {
+ 
++    @BeforeEach
++    public void setup() throws IllegalAccessException, NoSuchFieldException {
++        // Since we're not running "in" a JenkinsJVM for core tests, need to force the flags to behave safely
++        for (String fieldName : List.of("ALLOW_UNTAR_SYMLINK_RESOLUTION", "ALLOW_REENTRY_PATH_TRAVERSAL")) {
++            final Field escapeHatch = FilePath.class.getDeclaredField(fieldName);
++            escapeHatch.setAccessible(true);
++            escapeHatch.set(null, Boolean.FALSE);
++        }
++    }
++
+     @Test
+     void tarSymlinkPathTraversal(@TempDir File root) throws Exception {
+         final FilePath tarfile = new FilePath(createTarFile(root, symlink("attacker", ".."), fileOrDir("attacker/pwned.txt")));
+@@ -50,7 +62,7 @@ public class Security3657Test {
+     void tarSymlinkPathTraversalEscapeHatch(@TempDir File root) throws Exception {
+         final Field escapeHatch = FilePath.class.getDeclaredField("ALLOW_UNTAR_SYMLINK_RESOLUTION");
+         escapeHatch.setAccessible(true);
+-        escapeHatch.setBoolean(null, true);
++        escapeHatch.set(null, Boolean.TRUE);
+         try {
+             final FilePath tarfile = new FilePath(createTarFile(root, symlink("attacker", ".."), fileOrDir("attacker/pwned.txt")));
+ 
+@@ -63,7 +75,7 @@ public class Security3657Test {
+             assertTrue(extractDir.child("attacker").exists());
+             assertTrue(new File(root, "pwned.txt").exists());
+         } finally {
+-            escapeHatch.setBoolean(null, false);
++            escapeHatch.set(null, null);
+         }
+     }
+ 
+@@ -373,12 +385,12 @@ public class Security3657Test {
+         extractFilePath.mkdirs();
+         final Field escapeHatch = FilePath.class.getDeclaredField("ALLOW_REENTRY_PATH_TRAVERSAL");
+         escapeHatch.setAccessible(true);
+-        escapeHatch.setBoolean(null, true);
++        escapeHatch.set(null, Boolean.TRUE);
+         try {
+             symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE);
+             assertTrue(Files.exists(extractDir.toPath().resolve("foo")));
+         } finally {
+-            escapeHatch.setBoolean(null, false);
++            escapeHatch.set(null, null);
+         }
+     }
+ 
+@@ -394,12 +406,12 @@ public class Security3657Test {
+         extractFilePath.mkdirs();
+         final Field escapeHatch = FilePath.class.getDeclaredField("ALLOW_REENTRY_PATH_TRAVERSAL");
+         escapeHatch.setAccessible(true);
+-        escapeHatch.setBoolean(null, true);
++        escapeHatch.set(null, Boolean.TRUE);
+         try {
+             symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE);
+             assertTrue(Files.exists(extractDir.toPath().resolve("foo")));
+         } finally {
+-            escapeHatch.setBoolean(null, false);
++            escapeHatch.set(null, null);
+         }
+     }
+ 
+diff --git a/test/src/test/java/jenkins/security/Security3657Test.java b/test/src/test/java/jenkins/security/Security3657Test.java
+new file mode 100644
+index 0000000000..d264e89868
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security3657Test.java
+@@ -0,0 +1,189 @@
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.is;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import hudson.FilePath;
++import hudson.model.Node;
++import hudson.slaves.DumbSlave;
++import java.io.File;
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.util.List;
++import jenkins.agents.ControllerToAgentCallable;
++import jenkins.util.JenkinsJVM;
++import org.apache.tools.tar.TarConstants;
++import org.apache.tools.tar.TarEntry;
++import org.apache.tools.tar.TarOutputStream;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++public class Security3657Test {
++    @BeforeEach
++    public void setup() throws Exception {
++        // We're using SetEscapeHatchCallable to set this, potentially on the Jenkins JVM, so ensure a clean slate to start
++        for (String fieldName : List.of("ALLOW_UNTAR_SYMLINK_RESOLUTION", "ALLOW_REENTRY_PATH_TRAVERSAL")) {
++            final Field escapeHatch = FilePath.class.getDeclaredField(fieldName);
++            escapeHatch.setAccessible(true);
++            escapeHatch.set(null, null);
++        }
++    }
++
++    @Test
++    public void agentUnprotected(JenkinsRule j) throws Exception {
++        final DumbSlave node = j.createOnlineSlave();
++        node.getChannel().call(new EnsureNotJenkinsJVM());
++        final UntarCallable callable = new UntarCallable(node.getRootDir());
++        node.getChannel().call(callable);
++    }
++
++    @Test
++    public void agentProtectedWithEscapeHatch(JenkinsRule j) throws Exception {
++        // "escape hatch" is a misnomer here I guess
++        final DumbSlave node = j.createOnlineSlave();
++        node.getChannel().call(new EnsureNotJenkinsJVM());
++        node.getChannel().call(new SetEscapeHatchCallable(false));
++        final UntarCallable callable = new UntarCallable(node.getRootDir());
++        final IOException ioException = assertThrows(IOException.class, () -> node.getChannel().call(callable));
++        assertThat(ioException.getMessage(), is("Failed to extract file.tar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar file.tar attempts to write to file with symlink in path: foo/bar"));
++    }
++
++    @Test
++    public void builtInProtected(JenkinsRule j) throws Exception {
++        // Sort of a side effect of using JenkinsJVM, written this way to mirror agent tests only
++        final Node node = j.jenkins.getComputer("(built-in)").getNode();
++        node.getChannel().call(new EnsureJenkinsJVM());
++        final UntarCallable callable = new UntarCallable(node.getRootDir());
++        final IOException ioException = assertThrows(IOException.class, () -> node.getChannel().call(callable));
++        assertThat(ioException.getMessage(), is("Failed to extract file.tar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar file.tar attempts to write to file with symlink in path: foo/bar"));
++    }
++
++    @Test
++    public void builtInUnprotectedWithEscapeHatch(JenkinsRule j) throws Exception {
++        final Node node = j.jenkins.getComputer("(built-in)").getNode();
++        node.getChannel().call(new EnsureJenkinsJVM());
++        node.getChannel().call(new SetEscapeHatchCallable(true));
++        final UntarCallable callable = new UntarCallable(node.getRootDir());
++        node.getChannel().call(callable);
++    }
++
++    private static class EnsureJenkinsJVM implements ControllerToAgentCallable<Void, IllegalStateException> {
++        @Override
++        public Void call() throws IllegalStateException {
++            JenkinsJVM.checkJenkinsJVM();
++            return null;
++        }
++    }
++
++    private static class EnsureNotJenkinsJVM implements ControllerToAgentCallable<Void, IllegalStateException> {
++        @Override
++        public Void call() throws IllegalStateException {
++            JenkinsJVM.checkNotJenkinsJVM();
++            return null;
++        }
++    }
++
++    private static class SetEscapeHatchCallable implements ControllerToAgentCallable<Void, Exception> {
++        private final Boolean flag;
++
++        SetEscapeHatchCallable(Boolean flag) {
++            this.flag = flag;
++        }
++
++        @Override
++        public Void call() throws Exception {
++            for (String fieldName : List.of("ALLOW_UNTAR_SYMLINK_RESOLUTION", "ALLOW_REENTRY_PATH_TRAVERSAL")) {
++                final Field escapeHatch = FilePath.class.getDeclaredField(fieldName);
++                escapeHatch.setAccessible(true);
++                escapeHatch.set(null, flag);
++            }
++            return null;
++        }
++    }
++
++    private static class UntarCallable implements ControllerToAgentCallable<Void, Exception> {
++
++        private final File rootDir;
++
++        UntarCallable(File rootDir) {
++            this.rootDir = rootDir;
++        }
++
++        @Override
++        public Void call() throws Exception {
++            rootDir.mkdirs();
++            final File linkTar = createTarFile(rootDir, "link.tar", Entry.fileOrDir("anywhere/"), Entry.symlink("foo", "anywhere"));
++            final File fileTar = createTarFile(rootDir, "file.tar", Entry.fileOrDir("foo/bar"));
++            final File untarDestinationFile = new File(rootDir, "untar-destination");
++            final FilePath untarDestinationFilePath = new FilePath(untarDestinationFile);
++            untarDestinationFile.mkdirs();
++            new FilePath(linkTar).untar(untarDestinationFilePath, FilePath.TarCompression.NONE);
++            new FilePath(fileTar).untar(untarDestinationFilePath, FilePath.TarCompression.NONE);
++            return null;
++        }
++    }
++
++    // Lines below duplicated from core/…/Security3657Test.java
++
++    private static File createTarFile(File base, String fileName, Entry... entries) throws IOException {
++        File tarFile = new File(base, fileName);
++
++        try (TarOutputStream tar = new TarOutputStream(Files.newOutputStream(tarFile.toPath()))) {
++            for (Entry entry : entries) {
++                entry.add(tar);
++            }
++        }
++        return tarFile;
++    }
++
++    interface Entry {
++        void add(TarOutputStream tar) throws IOException;
++
++        /**
++         * @param name the name of the file or folder. For folder, add trailing /
++         */
++        static Entry fileOrDir(String name) {
++            return new FileOrDirEntry(name);
++        }
++
++        static Entry symlink(String name, String target) {
++            return new SymlinkEntry(name, target);
++        }
++
++    }
++
++    record FileOrDirEntry(String name) implements Entry {
++        @Override
++        public void add(TarOutputStream tar) throws IOException {
++            TarEntry fileEntry = new TarEntry(name, true);
++            byte[] content = "You've been pwned!".getBytes(StandardCharsets.UTF_8);
++            if (!fileEntry.isDirectory()) {
++                fileEntry.setSize(content.length);
++            }
++            tar.putNextEntry(fileEntry);
++            if (!fileEntry.isDirectory()) {
++                tar.write(content);
++            }
++            tar.closeEntry();
++        }
++    }
++
++    record SymlinkEntry(String name, String target) implements Entry {
++        @Override
++        public void add(TarOutputStream tar) throws IOException {
++            TarEntry symlinkEntry = new TarEntry(name, true);
++            symlinkEntry.setLinkFlag(TarConstants.LF_SYMLINK);
++            symlinkEntry.setLinkName(target);
++            tar.putNextEntry(symlinkEntry);
++            tar.closeEntry();
++        }
++    }
++}
+-- 
+2.43.0
+

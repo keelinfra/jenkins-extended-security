@@ -1,0 +1,124 @@
+From ad02b8481b1fc0e54d6f19d34071ccdefcbfcfc9 Mon Sep 17 00:00:00 2001
+From: Mark Waite <mark.earl.waite@gmail.com>
+Date: Mon, 12 Jan 2026 15:02:04 -0700
+Subject: [PATCH 31/31] Delete builds in QueueTest to prevent Windows test failures
+ (#26104)
+
+* Remove noisy test logging from QueueTest
+
+No one is reading the test logs.  They add megabytes to the output and
+may obscure useful messages.
+
+* Stop and delete builds 1 and 2 in QueueTest to prevent Windows test failures
+
+The Windows file system prevents cleanup of the builds and jobs directory
+while the test has them open.  Stopping the builds and deleting them is
+enough to close the directory and allow it to be deleted.
+
+Testing done:
+
+* Before this change, testGetCauseOfBlockageForNonConcurrentFreestyle
+  failed in about 50% of runs on my 7 different Windows agents
+* After this change, testGetCauseOfBlockageForNonConcurrentFreestyle
+  passes all runs on my 7 different Windows agents
+
+Test-only backport, not a security fix. Without it the test can fail in
+JenkinsRule teardown while build 2 is still writing build.xml (seen once in
+CI on JDK 21).
+
+(cherry picked from commit 06a41152b31fa00b720a26e4aed7e6b6eefe8dc0)
+---
+ .../src/test/java/hudson/model/QueueTest.java | 28 +++++++++++--------
+ 1 file changed, 16 insertions(+), 12 deletions(-)
+
+diff --git a/test/src/test/java/hudson/model/QueueTest.java b/test/src/test/java/hudson/model/QueueTest.java
+index 5bc9963..93e0ad8 100644
+--- a/test/src/test/java/hudson/model/QueueTest.java
++++ b/test/src/test/java/hudson/model/QueueTest.java
+@@ -90,8 +90,6 @@ import java.io.IOException;
+ import java.io.UncheckedIOException;
+ import java.net.HttpURLConnection;
+ import java.net.URI;
+-import java.nio.charset.StandardCharsets;
+-import java.nio.file.Files;
+ import java.time.Duration;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+@@ -112,7 +110,6 @@ import java.util.concurrent.TimeoutException;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.function.Function;
+-import java.util.logging.Level;
+ import java.util.logging.Logger;
+ import jenkins.model.BlockedBecauseOfBuildInProgress;
+ import jenkins.model.Jenkins;
+@@ -132,7 +129,6 @@ import org.junit.jupiter.api.Disabled;
+ import org.junit.jupiter.api.Test;
+ import org.jvnet.hudson.test.Issue;
+ import org.jvnet.hudson.test.JenkinsRule;
+-import org.jvnet.hudson.test.LogRecorder;
+ import org.jvnet.hudson.test.MockAuthorizationStrategy;
+ import org.jvnet.hudson.test.MockQueueItemAuthenticator;
+ import org.jvnet.hudson.test.SequenceLock;
+@@ -150,8 +146,6 @@ import org.springframework.security.core.Authentication;
+ @WithJenkins
+ public class QueueTest {
+ 
+-    private final LogRecorder logging = new LogRecorder().record(Queue.class, Level.FINE);
+-
+     private JenkinsRule r;
+ 
+     @BeforeEach
+@@ -173,8 +167,6 @@ public class QueueTest {
+         assertNotNull(testProject.scheduleBuild2(0, new UserIdCause()));
+         q.save();
+ 
+-        System.out.println(Files.readString(r.jenkins.getRootDir().toPath().resolve("queue.xml"), StandardCharsets.UTF_8));
+-
+         assertEquals(1, q.getItems().length);
+         q.clear();
+         assertEquals(0, q.getItems().length);
+@@ -228,8 +220,6 @@ public class QueueTest {
+         assertNotNull(testProject.scheduleBuild2(0, new UserIdCause()));
+         q.save();
+ 
+-        System.out.println(Files.readString(r.jenkins.getRootDir().toPath().resolve("queue.xml"), StandardCharsets.UTF_8));
+-
+         assertEquals(1, q.getItems().length);
+         q.clear();
+         assertEquals(0, q.getItems().length);
+@@ -372,7 +362,6 @@ public class QueueTest {
+                         Started by remote host 4.3.2.1 with note: test
+                         Started by remote host 1.2.3.4 with note: foo"""),
+                    "Build page should combine duplicates and show counts: " + buildPage);
+-        System.out.println(new XmlFile(new File(build.getRootDir(), "build.xml")).asString());
+     }
+ 
+     @Issue("JENKINS-8790")
+@@ -1243,7 +1232,22 @@ public class QueueTest {
+ 
+         assertEquals(expected.getShortDescription(), actual.getShortDescription());
+         Queue.getInstance().doCancelItem(r.jenkins.getQueue().getBlockedItems().get(0).getId());
+-        r.assertBuildStatusSuccess(r.waitForCompletion(build));
++
++        build.doStop(); // Stop build 1 early
++        r.waitForCompletion(build);
++        build.delete(); // Delete build 1
++
++        // Stop and delete build 2 if it is running.  Seen running on slower Windows computers
++        if (t1.isBuilding()) {
++            FreeStyleBuild build2 = t1.getLastBuild();
++            build2.doStop();
++            r.waitForCompletion(build2);
++            build2.delete();
++        }
++
++        assertFalse(t1.isBuilding(), "Job unexpectedly building");
++        assertNull(t1.getQueueItem(), "Job unexpectedly has non-null entry in queue " + t1.getQueueItem());
++        assertFalse(t1.isInQueue(), "Job unexpectedly in queue");
+     }
+ 
+     @Test
+-- 
+2.43.0
+

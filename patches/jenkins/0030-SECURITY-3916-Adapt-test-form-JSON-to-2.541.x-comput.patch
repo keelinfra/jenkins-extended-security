@@ -1,0 +1,48 @@
+From d2e6421bdaca97e1f6dae1b89e6b7f187f555f98 Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 09:00:52 +0000
+Subject: [PATCH 30/30] [SECURITY-3916] Adapt test form JSON to 2.541.x
+ (computerRetentionCheckInterval required)
+
+Adaptation, not an upstream commit. The fix itself is unchanged. The 2.541.x
+global configuration form still requires computerRetentionCheckInterval, so the
+test submits it.
+
+---
+ test/src/test/java/jenkins/model/Security3916Test.java | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/test/src/test/java/jenkins/model/Security3916Test.java b/test/src/test/java/jenkins/model/Security3916Test.java
+index bde3c6e183..6ab9101cc1 100644
+--- a/test/src/test/java/jenkins/model/Security3916Test.java
++++ b/test/src/test/java/jenkins/model/Security3916Test.java
+@@ -77,6 +77,8 @@ class Security3916Test {
+         j.jenkins.setCrumbIssuer(null);
+ 
+         String json = "{\"jenkins-model-GlobalQuietPeriodConfiguration\":{\"quietPeriod\":\"5\"},"
++                // 2.541.x still requires this field in the global config form
++                + "\"jenkins-model-GlobalComputerRetentionCheckIntervalConfiguration\":{\"computerRetentionCheckInterval\":60},"
+                 + "\"jenkins-model-GlobalSCMRetryCountConfiguration\":{\"scmCheckoutRetryCount\":0},"
+                 + "\"jenkins-model-GlobalProjectNamingStrategyConfiguration\":"
+                 + "{\"useProjectNamingStrategy\":{\"namingStrategy\":"
+@@ -103,6 +105,8 @@ class Security3916Test {
+         j.jenkins.setCrumbIssuer(null);
+ 
+         String json = "{\"jenkins-model-GlobalQuietPeriodConfiguration\":{\"quietPeriod\":\"5\"},"
++                // 2.541.x still requires this field in the global config form
++                + "\"jenkins-model-GlobalComputerRetentionCheckIntervalConfiguration\":{\"computerRetentionCheckInterval\":60},"
+                 + "\"jenkins-model-GlobalSCMRetryCountConfiguration\":{\"scmCheckoutRetryCount\":0},"
+                 + "\"jenkins-model-GlobalProjectNamingStrategyConfiguration\":"
+                 + "{\"useProjectNamingStrategy\":{\"namingStrategy\":"
+@@ -129,6 +133,8 @@ class Security3916Test {
+         j.jenkins.setCrumbIssuer(null);
+ 
+         String json = "{\"jenkins-model-GlobalQuietPeriodConfiguration\":{\"quietPeriod\":\"5\"},"
++                // 2.541.x still requires this field in the global config form
++                + "\"jenkins-model-GlobalComputerRetentionCheckIntervalConfiguration\":{\"computerRetentionCheckInterval\":60},"
+                 + "\"jenkins-model-GlobalSCMRetryCountConfiguration\":{\"scmCheckoutRetryCount\":0},"
+                 + "\"jenkins-model-GlobalProjectNamingStrategyConfiguration\":"
+                 + "{\"useProjectNamingStrategy\":{\"namingStrategy\":"
+-- 
+2.43.0
+

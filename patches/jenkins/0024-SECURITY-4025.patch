@@ -1,0 +1,242 @@
+From bdb5b4043ef1d8cd7822dd925f21055e132dd581 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 10:21:43 +0000
+Subject: [PATCH 24/30] [SECURITY-4025]
+
+(cherry picked from commit fbc5ce3718cb42681627a177fbe6ce14b14bd6fb)
+---
+ core/src/main/java/jenkins/model/Nodes.java   |   5 +
+ .../test/java/jenkins/model/NodesTest.java    |  20 ++-
+ .../jenkins/security/Security4025Test.java    | 148 ++++++++++++++++++
+ 3 files changed, 171 insertions(+), 2 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security4025Test.java
+
+diff --git a/core/src/main/java/jenkins/model/Nodes.java b/core/src/main/java/jenkins/model/Nodes.java
+index 150455e3f3..4fd6b8f896 100644
+--- a/core/src/main/java/jenkins/model/Nodes.java
++++ b/core/src/main/java/jenkins/model/Nodes.java
+@@ -32,6 +32,7 @@ import hudson.ExtensionList;
+ import hudson.Util;
+ import hudson.XmlFile;
+ import hudson.model.Computer;
++import hudson.model.Failure;
+ import hudson.model.Node;
+ import hudson.model.PersistenceRoot;
+ import hudson.model.Queue;
+@@ -281,6 +282,10 @@ public class Nodes implements PersistenceRoot {
+         if (oldOne == nodes.get(oldOne.getNodeName())) {
+             // use the queue lock until Nodes has a way of directly modifying a single node.
+             Queue.runWithLock(() -> {
++                if (!newOne.getNodeName().equals(oldOne.getNodeName())
++                        && nodes.containsKey(newOne.getNodeName())) {
++                    throw new Failure("Node already exists: " + newOne.getNodeName());
++                }
+                 Nodes.this.nodes.remove(oldOne.getNodeName());
+                 Nodes.this.nodes.put(newOne.getNodeName(), newOne);
+                 newOne.onLoad(Nodes.this, newOne.getNodeName());
+diff --git a/test/src/test/java/jenkins/model/NodesTest.java b/test/src/test/java/jenkins/model/NodesTest.java
+index 037cbcd0db..f398edee70 100644
+--- a/test/src/test/java/jenkins/model/NodesTest.java
++++ b/test/src/test/java/jenkins/model/NodesTest.java
+@@ -31,6 +31,8 @@ import static org.hamcrest.Matchers.containsString;
+ import static org.hamcrest.Matchers.empty;
+ import static org.hamcrest.Matchers.equalTo;
+ import static org.hamcrest.Matchers.hasSize;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.notNullValue;
+ import static org.hamcrest.Matchers.nullValue;
+ import static org.hamcrest.Matchers.sameInstance;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+@@ -56,6 +58,7 @@ import hudson.slaves.ComputerRetentionWork;
+ import hudson.slaves.DumbSlave;
+ import hudson.slaves.RetentionStrategy;
+ import hudson.slaves.SlaveComputer;
++import java.io.File;
+ import java.io.IOException;
+ import java.net.URISyntaxException;
+ import java.util.ArrayList;
+@@ -166,12 +169,25 @@ class NodesTest {
+     @Test
+     @Issue("JENKINS-56403")
+     void replaceNodeShouldRemoveOldNode() throws Exception {
+-        Node oldNode = r.createSlave("foo", "", null);
+-        Node newNode = r.createSlave("foo-new", "", null);
++        // Manually creating agents because we don't want then #add'ed to the nodes list before we do that
++        DumbSlave oldNode = new DumbSlave("foo",
++                new File(r.jenkins.getRootDir(), "agent-work-dirs/foo").getAbsolutePath(),
++                r.createComputerLauncher(null));
++        oldNode.setRetentionStrategy(RetentionStrategy.NOOP);
++
++        final String newRemoteFs = new File(r.jenkins.getRootDir(), "agent-work-dirs/foo-new").getAbsolutePath();
++        DumbSlave newNode = new DumbSlave("foo-new",
++                newRemoteFs,
++                r.createComputerLauncher(null));
++        newNode.setRetentionStrategy(RetentionStrategy.NOOP);
++
+         r.jenkins.addNode(oldNode);
+         r.jenkins.getNodesObject().replaceNode(oldNode, newNode);
+         r.jenkins.getNodesObject().load();
+         assertNull(r.jenkins.getNode("foo"));
++        final Node newAfterReload = r.jenkins.getNode("foo-new");
++        assertNotNull(newAfterReload);
++        assertThat(((DumbSlave) newAfterReload).getRemoteFS(), is(newRemoteFs));
+     }
+ 
+     @Test
+diff --git a/test/src/test/java/jenkins/security/Security4025Test.java b/test/src/test/java/jenkins/security/Security4025Test.java
+new file mode 100644
+index 0000000000..e3b75b8ee7
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security4025Test.java
+@@ -0,0 +1,148 @@
++package jenkins.security;
++
++import static hudson.cli.CLICommandInvoker.Matcher.failedWith;
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.equalTo;
++import static org.hamcrest.Matchers.not;
++import static org.hamcrest.Matchers.nullValue;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import hudson.cli.CLICommandInvoker;
++import hudson.cli.UpdateNodeCommand;
++import hudson.model.Computer;
++import hudson.model.Failure;
++import hudson.model.Node;
++import hudson.model.Slave;
++import hudson.slaves.DumbSlave;
++import hudson.slaves.JNLPLauncher;
++import java.io.ByteArrayInputStream;
++import java.net.HttpURLConnection;
++import java.nio.charset.StandardCharsets;
++import jenkins.model.Jenkins;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.Page;
++import org.htmlunit.WebRequest;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++@Issue("SECURITY-4025")
++class Security4025Test {
++
++    private static final String ATTACKER = "attacker";
++    private static final String SOURCE_AGENT = "source-agent";
++    private static final String VICTIM_AGENT = "victim-agent";
++
++    private static String agentXmlNamed(String name, String remoteFS) {
++        return "<?xml version=\"1.1\" encoding=\"UTF-8\"?>"
++                + "<slave>"
++                + "<name>" + name + "</name>"
++                + "<remoteFS>" + remoteFS + "</remoteFS>"
++                + "<numExecutors>1</numExecutors>"
++                + "<mode>NORMAL</mode>"
++                + "<launcher class=\"hudson.slaves.JNLPLauncher\">"
++                + "<workDirSettings><disabled>false</disabled><internalDir>remoting</internalDir>"
++                + "<failIfWorkDirIsMissing>false</failIfWorkDirIsMissing></workDirSettings>"
++                + "<webSocket>false</webSocket>"
++                + "</launcher>"
++                + "<label></label>"
++                + "<nodeProperties/>"
++                + "</slave>";
++    }
++
++    @Test
++    void postConfigXmlCannotOverwriteAnotherAgent(JenkinsRule j) throws Exception {
++        j.createSlave(SOURCE_AGENT, null, null);
++        DumbSlave victim = j.createSlave(VICTIM_AGENT, null, null);
++        String victimOriginalFS = victim.getRemoteFS();
++
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ, Computer.CONFIGURE).everywhere().to(ATTACKER));
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().login(ATTACKER).withThrowExceptionOnFailingStatusCode(false)) {
++            WebRequest req = new WebRequest(wc.createCrumbedUrl(String.format("computer/%s/config.xml", SOURCE_AGENT)), HttpMethod.POST);
++            req.setAdditionalHeader("Content-Type", "application/xml");
++            req.setRequestBody(agentXmlNamed(VICTIM_AGENT, "/OVERWRITTEN"));
++
++            Page response = wc.getPage(req);
++            assertThat(response.getWebResponse().getStatusCode(), not(equalTo(HttpURLConnection.HTTP_OK)));
++        }
++
++        // source-agent must still exist
++        assertNotNull(j.jenkins.getNode(SOURCE_AGENT), "source-agent must still exist");
++
++        // victim-agent must be completely untouched
++        Node victimAfter = j.jenkins.getNode(VICTIM_AGENT);
++        assertNotNull(victimAfter);
++        assertThat(((Slave) victimAfter).getRemoteFS(), equalTo(victimOriginalFS));
++    }
++
++    /**
++     * POST config.xml with a name that does not collide with any existing agent succeeds,
++     * renaming the node. See also UpdateNodeCommandTest#updateNodeShouldModifyNodeConfiguration.
++     */
++    @Test
++    void postConfigXmlRenameToFreshNameSucceeds(JenkinsRule j) throws Exception {
++        j.createSlave(SOURCE_AGENT, null, null);
++
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ, Computer.CONFIGURE).everywhere().to(ATTACKER));
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().login(ATTACKER).withThrowExceptionOnFailingStatusCode(false)) {
++            WebRequest req = new WebRequest(wc.createCrumbedUrl(String.format("computer/%s/config.xml", SOURCE_AGENT)), HttpMethod.POST);
++            req.setAdditionalHeader("Content-Type", "application/xml");
++            req.setRequestBody(agentXmlNamed("brand-new-name", "/some/path"));
++
++            Page response = wc.getPage(req);
++            assertThat(response.getWebResponse().getStatusCode(), equalTo(HttpURLConnection.HTTP_OK));
++        }
++
++        assertNotNull(j.jenkins.getNode("brand-new-name"));
++        assertThat(j.jenkins.getNode(SOURCE_AGENT), nullValue());
++    }
++
++    @Test
++    void cliUpdateNodeCannotOverwriteAnotherAgent(JenkinsRule j) throws Exception {
++        j.createSlave(SOURCE_AGENT, null, null);
++        DumbSlave victim = j.createSlave(VICTIM_AGENT, null, null);
++        String victimOriginalFS = victim.getRemoteFS();
++
++        CLICommandInvoker command = new CLICommandInvoker(j, new UpdateNodeCommand()).authorizedTo(Computer.CONFIGURE, Jenkins.READ);
++        byte[] payload = agentXmlNamed(VICTIM_AGENT, "/OVERWRITTEN").getBytes(StandardCharsets.UTF_8);
++        CLICommandInvoker.Result result = command.withStdin(new ByteArrayInputStream(payload)).invokeWithArgs(SOURCE_AGENT);
++
++        assertThat(result, failedWith(1));
++        assertThat(result.stderr(), containsString("Node already exists: victim-agent"));
++
++        assertNotNull(j.jenkins.getNode(SOURCE_AGENT));
++
++        // victim-agent must be completely untouched
++        Node victimAfter = j.jenkins.getNode(VICTIM_AGENT);
++        assertNotNull(victimAfter);
++        assertThat(((Slave) victimAfter).getRemoteFS(), equalTo(victimOriginalFS));
++    }
++
++    @Test
++    void replaceNodeRejectsCollision(JenkinsRule j) throws Exception {
++        DumbSlave source = j.createSlave(SOURCE_AGENT, null, null);
++        DumbSlave victim = j.createSlave(VICTIM_AGENT, null, null);
++        String victimOriginalFS = victim.getRemoteFS();
++
++        DumbSlave colliding = new DumbSlave(VICTIM_AGENT, "/OVERWRITTEN", new JNLPLauncher(false));
++
++        assertThrows(Failure.class, () -> j.jenkins.getNodesObject().replaceNode(source, colliding));
++
++        // Both nodes must survive intact
++        assertNotNull(j.jenkins.getNode(SOURCE_AGENT));
++        Node victimAfter = j.jenkins.getNode(VICTIM_AGENT);
++        assertNotNull(victimAfter);
++        assertThat(((Slave) victimAfter).getRemoteFS(), equalTo(victimOriginalFS));
++    }
++}
+-- 
+2.43.0
+

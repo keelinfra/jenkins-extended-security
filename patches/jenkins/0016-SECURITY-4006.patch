@@ -1,0 +1,363 @@
+From 451e801140015402b1c9ca1e3bf0863bf8b6d77d Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 10:21:01 +0000
+Subject: [PATCH 16/30] [SECURITY-4006]
+
+(cherry picked from commit a853df5a2436697557ff402f4c248357b0a3f0dd)
+---
+ .../java/hudson/model/ParametersAction.java   |  10 +
+ core/src/main/java/hudson/model/Queue.java    |  18 +-
+ .../hudson/model/ParametersAction/index.jelly |  14 +-
+ .../jenkins/security/Security4006Test.java    | 250 ++++++++++++++++++
+ 4 files changed, 284 insertions(+), 8 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security4006Test.java
+
+diff --git a/core/src/main/java/hudson/model/ParametersAction.java b/core/src/main/java/hudson/model/ParametersAction.java
+index e262909e47..422b229427 100644
+--- a/core/src/main/java/hudson/model/ParametersAction.java
++++ b/core/src/main/java/hudson/model/ParametersAction.java
+@@ -98,6 +98,16 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
+ 
+     private transient Run<?, ?> run;
+ 
++    /**
++     * Returns the {@link Run} this action is attached to, or {@code null} before being attached to a {@link Run}.
++     * Note that this can be non-{@code null} while being accessed from a {@link hudson.model.Queue.Item}.
++     */
++    @Restricted(NoExternalUse.class) // Jelly
++    @CheckForNull
++    public Run<?, ?> getRun() {
++        return run;
++    }
++
+     public ParametersAction(@NonNull List<ParameterValue> parameters) {
+         this.parameters = new ArrayList<>(parameters);
+         String paramNames = SystemProperties.getString(SAFE_PARAMETERS_SYSTEM_PROPERTY_NAME);
+diff --git a/core/src/main/java/hudson/model/Queue.java b/core/src/main/java/hudson/model/Queue.java
+index 191dbf8a62..945d205a40 100644
+--- a/core/src/main/java/hudson/model/Queue.java
++++ b/core/src/main/java/hudson/model/Queue.java
+@@ -136,6 +136,7 @@ import org.kohsuke.stapler.CancelRequestHandlingException;
+ import org.kohsuke.stapler.HttpResponse;
+ import org.kohsuke.stapler.HttpResponses;
+ import org.kohsuke.stapler.QueryParameter;
++import org.kohsuke.stapler.StaplerProxy;
+ import org.kohsuke.stapler.StaplerRequest2;
+ import org.kohsuke.stapler.export.Exported;
+ import org.kohsuke.stapler.export.ExportedBean;
+@@ -2264,7 +2265,7 @@ public class Queue extends ResourceController implements Saveable {
+      * Item in a queue.
+      */
+     @ExportedBean(defaultVisibility = 999)
+-    public abstract static class Item extends Actionable implements QueueItem {
++    public abstract static class Item extends Actionable implements QueueItem, StaplerProxy {
+ 
+         private final long id;
+ 
+@@ -2525,6 +2526,21 @@ public class Queue extends ResourceController implements Saveable {
+             return org.acegisecurity.Authentication.fromSpring(authenticate2());
+         }
+ 
++        @Restricted(DoNotUse.class) // Stapler
++        @Override
++        public Object getTarget() {
++            if (!(task instanceof AccessControlled ac)) {
++                return this;
++            }
++            if (!ac.hasPermission(hudson.model.Item.DISCOVER)) {
++                return null;
++            }
++            if (!ac.hasPermission(hudson.model.Item.READ)) {
++                throw new AccessDeniedException("Please log in to access " + task.getUrl());
++            }
++            return this;
++        }
++
+         @Restricted(DoNotUse.class) // only for Stapler export
+         public Api getApi() throws AccessDeniedException {
+             if (task instanceof AccessControlled) {
+diff --git a/core/src/main/resources/hudson/model/ParametersAction/index.jelly b/core/src/main/resources/hudson/model/ParametersAction/index.jelly
+index fe9a2f0415..39c06f03d7 100644
+--- a/core/src/main/resources/hudson/model/ParametersAction/index.jelly
++++ b/core/src/main/resources/hudson/model/ParametersAction/index.jelly
+@@ -26,14 +26,14 @@ THE SOFTWARE.
+ <j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:l="/lib/layout" xmlns:t="/lib/hudson">
+   <j:set var="title" value="${it.displayName}" />
+   <l:layout title="${title}">
+-    <j:invokeStatic var="currentThread" className="java.lang.Thread" method="currentThread" />
+-    <j:invoke var="buildClass" on="${currentThread.contextClassLoader}" method="loadClass">
+-      <j:arg value="hudson.model.Run" />
+-    </j:invoke>
+-    <j:set var="build" value="${request2.findAncestorObject(buildClass)}" />
+-    <st:include page="sidepanel.jelly" it="${build}" />
++    <j:set var="build" value="${it.run}" />
++    <j:if test="${build != null}">
++      <st:include page="sidepanel.jelly" it="${build}" />
++    </j:if>
+     <l:main-panel>
+-	  <t:buildCaption it="${build}">${title}</t:buildCaption>
++      <j:if test="${build != null}">
++        <t:buildCaption it="${build}">${title}</t:buildCaption>
++      </j:if>
+       <j:set var="escapeEntryTitleAndDescription" value="true" /> <!-- SECURITY-353 defense unless overridden -->
+       <j:set var="readOnlyMode" value="true"/>
+       <j:forEach var="parameterValue" items="${it.parameters}">
+diff --git a/test/src/test/java/jenkins/security/Security4006Test.java b/test/src/test/java/jenkins/security/Security4006Test.java
+new file mode 100644
+index 0000000000..bca007a3ff
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security4006Test.java
+@@ -0,0 +1,250 @@
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.not;
++
++import hudson.model.Cause;
++import hudson.model.FreeStyleProject;
++import hudson.model.InvisibleAction;
++import hudson.model.Item;
++import hudson.model.ParametersAction;
++import hudson.model.ParametersDefinitionProperty;
++import hudson.model.Queue;
++import hudson.model.StringParameterDefinition;
++import hudson.model.StringParameterValue;
++import java.net.URL;
++import jenkins.model.Jenkins;
++import org.htmlunit.Page;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++import org.kohsuke.stapler.HttpResponse;
++import org.kohsuke.stapler.HttpResponses;
++
++@WithJenkins
++class Security4006Test {
++
++    @Test
++    void directQueueItemAccessBlockedWithoutItemRead(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++
++        final String jobName = "secret-job";
++        FreeStyleProject secretJob = j.createFreeStyleProject(jobName);
++
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin")
++                .grant(Jenkins.READ).everywhere().to("reader"));
++
++        // Schedule secret-job into the live queue (large quiet period keeps it there).
++        secretJob.scheduleBuild2(3600, new QueueItemAction());
++        Queue.Item hiddenItem = j.jenkins.getQueue().getItem(secretJob);
++        long hiddenId = hiddenItem.getId();
++
++        try (JenkinsRule.WebClient wc = j.createWebClient()
++                .withThrowExceptionOnFailingStatusCode(false)
++                .login("reader")) {
++
++            // Hidden job page returns 404.
++            Page hiddenJobPage = wc.getPage(secretJob);
++            assertThat(hiddenJobPage.getWebResponse().getStatusCode(), is(404));
++
++            // Direct queue item API returns 404.
++            Page itemApiPage = wc.getPage(new URL(j.getURL(), "queue/item/" + hiddenId + "/api/json"));
++            assertThat(itemApiPage.getWebResponse().getStatusCode(), is(404));
++
++            // Global queue API does not expose the hidden item.
++            Page queueApiPage = wc.getPage(new URL(j.getURL(), "queue/api/json"));
++            assertThat(queueApiPage.getWebResponse().getStatusCode(), is(200));
++            assertThat(queueApiPage.getWebResponse().getContentAsString(), not(containsString(jobName)));
++
++            // No queue item index access
++            String queueItemPath = "queue/item/" + hiddenId + "/";
++            Page queueItemIndex = wc.getPage(new URL(j.getURL(), queueItemPath));
++            assertThat(queueItemIndex.getWebResponse().getStatusCode(), is(404));
++
++            // Queue.Item.getTarget() enforces Item/READ, so no action access either
++            String queueItemActionPath = "queue/item/" + hiddenId + "/test-queue-item/";
++            Page queueItemActionIndex = wc.getPage(new URL(j.getURL(), queueItemActionPath));
++            assertThat(queueItemActionIndex.getWebResponse().getStatusCode(), is(404));
++        } finally {
++            j.jenkins.getQueue().cancel(secretJob);
++        }
++    }
++
++    @Test
++    void queueItemActionsAreAccessibleWithItemRead(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++
++        final String jobName = "accessible-job";
++        FreeStyleProject publicJob = j.createFreeStyleProject(jobName);
++
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin")
++                .grant(Jenkins.READ, Item.READ).everywhere().to("reader"));
++
++        // Schedule accessible-job into the live queue (large quiet period keeps it there).
++        publicJob.scheduleBuild2(3600, new QueueItemAction());
++        Queue.Item queueItem = j.jenkins.getQueue().getItem(publicJob);
++        long queueItemId = queueItem.getId();
++
++        try (JenkinsRule.WebClient wc = j.createWebClient()
++                .withThrowExceptionOnFailingStatusCode(false)
++                .login("reader")) {
++
++            // Job is accessible
++            Page hiddenJobPage = wc.getPage(publicJob);
++            assertThat(hiddenJobPage.getWebResponse().getStatusCode(), is(200));
++
++            // Direct queue item API is successful
++            Page itemApiPage = wc.getPage(new URL(j.getURL(), "queue/item/" + queueItemId + "/api/json"));
++            assertThat(itemApiPage.getWebResponse().getStatusCode(), is(200));
++
++            // Global queue API exposes the item.
++            Page queueApiPage = wc.getPage(new URL(j.getURL(), "queue/api/json"));
++            assertThat(queueApiPage.getWebResponse().getStatusCode(), is(200));
++            assertThat(queueApiPage.getWebResponse().getContentAsString(), containsString(jobName));
++
++            // Queue item index access
++            String queueItemPath = "queue/item/" + queueItemId + "/";
++            Page queueItemIndex = wc.getPage(new URL(j.getURL(), queueItemPath));
++            assertThat(queueItemIndex.getWebResponse().getStatusCode(), is(200));
++
++            // Queue.Item.getTarget() enforces Item/READ, but accessible
++            String queueItemActionPath = "queue/item/" + queueItemId + "/test-queue-item/";
++            Page queueItemActionIndex = wc.getPage(new URL(j.getURL(), queueItemActionPath));
++            assertThat(queueItemActionIndex.getWebResponse().getStatusCode(), is(200));
++        } finally {
++            j.jenkins.getQueue().cancel(publicJob);
++        }
++    }
++
++    @Test
++    void discoverOnlyQueueItemRedirectsAnonymousToLogin(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++
++        final String jobName = "secret-job";
++        FreeStyleProject secretJob = j.createFreeStyleProject(jobName);
++
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin")
++                .grant(Jenkins.READ, Item.DISCOVER).everywhere().toEveryone());
++
++        // Schedule secret-job into the live queue (large quiet period keeps it there).
++        secretJob.scheduleBuild2(3600, new QueueItemAction());
++        Queue.Item hiddenItem = j.jenkins.getQueue().getItem(secretJob);
++        long hiddenId = hiddenItem.getId();
++
++        try (JenkinsRule.WebClient wc = j.createWebClient()
++                .withThrowExceptionOnFailingStatusCode(false)
++                .withRedirectEnabled(false)
++                .withJavaScriptEnabled(false)) {
++            // Do not follow HTTP, meta, or JS redirects to login page
++            wc.setRefreshHandler((page, url, seconds) -> {});
++
++            // Discoverable job page returns 403.
++            Page hiddenJobPage = wc.getPage(secretJob);
++            assertThat(hiddenJobPage.getWebResponse().getStatusCode(), is(403));
++            assertThat(hiddenJobPage.getWebResponse().getContentAsString(), containsString("/login"));
++
++            // Discoverable queue item API returns 403 (from Queue.Item#getTarget).
++            Page itemApiPage = wc.getPage(new URL(j.getURL(), "queue/item/" + hiddenId + "/api/json"));
++            assertThat(itemApiPage.getWebResponse().getStatusCode(), is(403));
++            assertThat(itemApiPage.getWebResponse().getContentAsString(), containsString("/login"));
++
++            // Global queue API lists the job as discoverable in a special section
++            Page queueApiPage = wc.getPage(new URL(j.getURL(), "queue/api/json"));
++            assertThat(queueApiPage.getWebResponse().getStatusCode(), is(200));
++            assertThat(queueApiPage.getWebResponse().getContentAsString(), containsString("{\"_class\":\"hudson.model.Queue\",\"discoverableItems\":[{\"task\":{\"name\":\"" + jobName + "\"}}],\"items\":[]}"));
++
++            // No queue item index access
++            String queueItemPath = "queue/item/" + hiddenId + "/";
++            Page queueItemIndex = wc.getPage(new URL(j.getURL(), queueItemPath));
++            assertThat(queueItemIndex.getWebResponse().getStatusCode(), is(403));
++            assertThat(queueItemIndex.getWebResponse().getContentAsString(), containsString("/login"));
++
++            // Queue.Item.getTarget() enforces Item/READ, so no action access either
++            String queueItemActionPath = "queue/item/" + hiddenId + "/test-queue-item/";
++            Page queueItemActionIndex = wc.getPage(new URL(j.getURL(), queueItemActionPath));
++            assertThat(queueItemActionIndex.getWebResponse().getStatusCode(), is(403));
++            assertThat(queueItemActionIndex.getWebResponse().getContentAsString(), containsString("/login"));
++        } finally {
++            j.jenkins.getQueue().cancel(secretJob);
++        }
++    }
++
++    @Test
++    void parametersActionOnLiveQueueItemShowsParametersWithoutBuildContext(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++
++        FreeStyleProject project = j.createFreeStyleProject();
++        project.addProperty(new ParametersDefinitionProperty(
++                new StringParameterDefinition("TOKEN", "")));
++
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin")
++                .grant(Jenkins.READ, Item.READ).everywhere().to("reader"));
++
++        project.scheduleBuild2(3600, new ParametersAction(
++                new StringParameterValue("TOKEN", "queue-value")));
++        Queue.Item queueItem = j.jenkins.getQueue().getItem(project);
++        long queueItemId = queueItem.getId();
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("reader")) {
++            Page page = wc.getPage(new URL(j.getURL(), "queue/item/" + queueItemId + "/parameters/"));
++            assertThat(page.getWebResponse().getStatusCode(), is(200));
++            String content = page.getWebResponse().getContentAsString();
++            // Parameters are shown
++            assertThat(content, containsString("queue-value"));
++            // No build caption (run == null)
++            assertThat(content, not(containsString("jenkins-build-caption")));
++        } finally {
++            j.jenkins.getQueue().cancel(project);
++        }
++    }
++
++    @Test
++    void parametersActionOnLeftItemShowsParametersWithBuildContext(JenkinsRule j) throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++
++        FreeStyleProject project = j.createFreeStyleProject();
++        project.addProperty(new ParametersDefinitionProperty(
++                new StringParameterDefinition("TOKEN", "")));
++
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.ADMINISTER).everywhere().to("admin")
++                .grant(Jenkins.READ, Item.READ).everywhere().to("reader"));
++
++        j.assertBuildStatusSuccess(project.scheduleBuild2(
++                0, new Cause.UserIdCause(), new ParametersAction(
++                        new StringParameterValue("TOKEN", "left-item-value"))));
++
++        Queue.Item leftItem = j.jenkins.getQueue().getItem(
++                project.getLastBuild().getQueueId());
++        assertThat("LeftItem must still be present", leftItem instanceof Queue.LeftItem, is(true));
++        long leftItemId = leftItem.getId();
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().login("reader")) {
++            Page page = wc.getPage(new URL(j.getURL(), "queue/item/" + leftItemId + "/parameters/"));
++            assertThat(page.getWebResponse().getStatusCode(), is(200));
++            String content = page.getWebResponse().getContentAsString();
++            // Parameters are shown
++            assertThat(content, containsString("left-item-value"));
++            // Build caption is present (run != null)
++            assertThat(content, containsString("jenkins-build-caption"));
++        }
++    }
++
++    private static class QueueItemAction extends InvisibleAction {
++        public HttpResponse doIndex() {
++            return HttpResponses.ok();
++        }
++
++        @Override
++        public String getUrlName() {
++            return "test-queue-item";
++        }
++    }
++}
+-- 
+2.43.0
+
