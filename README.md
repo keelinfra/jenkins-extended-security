@@ -8,7 +8,7 @@ This is the 2.541.x line. The [main branch](../../tree/main) lists all lines.
 
 ## What's in it
 
-- [`patches/jenkins`](patches/jenkins): 30 patches on tag `jenkins-2.541.3`.
+- [`patches/jenkins`](patches/jenkins): 31 patches on tag `jenkins-2.541.3`. 0001 to 0030 are security fixes and their adaptations; `0031` is a test-only backport that makes `QueueTest` stable in CI.
 - [`patches/remoting`](patches/remoting): 1 patch on Remoting `3352.v17a_fb_4b_2773f`, the version 2.541.3 ships.
 - [`patches/stapler`](patches/stapler): 5 patches on Stapler `2050.v425108fd5089`, the version 2.541.3 ships. Four are security fixes; `0005` is a build fix that makes the WAR reproducible (see below).
 

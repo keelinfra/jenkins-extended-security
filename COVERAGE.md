@@ -44,3 +44,10 @@ Plugin issues are not covered. Install the fixed plugin versions; most of them s
 | SECURITY-4016 | CVE-2026-84652 | jenkins/0017 | caf1847af2 | |
 | SECURITY-4025 | CVE-2026-84651 | jenkins/0024 | fbc5ce3718 | |
 | SECURITY-4032 | CVE-2026-84650 | jenkins/0023, 0027 | c29adc6755 | 2.541 has no `Cause.causeBag` field, so that annotation is dropped. `DefaultCrumbIssuer.excludeClientIPFromCrumb` is not transient on 2.541 and stays as it is. |
+
+## Patches that are not security fixes
+
+| Patch | Upstream | Why |
+| --- | --- | --- |
+| stapler/0005 | none yet (still on Stapler master) | `QueryParameterAnnotationProcessor` skipped some `.stapler` files depending on HashSet order, which made the WAR non-reproducible. No runtime effect. |
+| jenkins/0031 | 06a41152b3 | Test only. `QueueTest.testGetCauseOfBlockageForNonConcurrentFreestyle` could fail in teardown while a build was still writing `build.xml`. |
