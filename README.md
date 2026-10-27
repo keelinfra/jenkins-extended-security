@@ -20,4 +20,4 @@ See [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT. The patches come from Jenkins, Remoting and Stapler, which are MIT-licensed too.
+This repository's own files are MIT, see [LICENSE](LICENSE). The patches keep the license of the project they come from: MIT for Jenkins and Remoting, BSD 2-Clause for Stapler. Each line's branch has the full texts in `LICENSES/`.
