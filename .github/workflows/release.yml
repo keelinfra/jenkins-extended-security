@@ -116,13 +116,6 @@ jobs:
           sha256sum -c sha256sums.txt
           gh attestation verify jenkins.war --repo ${GITHUB_REPOSITORY}
           \`\`\`
-
-          Container image: the official \`jenkins/jenkins:2.541.3-jdk17\` image with this WAR, nothing else changed. It is pushed when this release is published.
-
-          \`\`\`sh
-          docker pull ghcr.io/${GITHUB_REPOSITORY}:${VERSION}
-          gh attestation verify oci://ghcr.io/${GITHUB_REPOSITORY}:${VERSION} --repo ${GITHUB_REPOSITORY}
-          \`\`\`
           EOF
           gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
             --title "$VERSION" --notes-file notes.md \
