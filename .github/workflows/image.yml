@@ -1,0 +1,96 @@
+name: Image
+
+# Builds and pushes the container image when a release is published. It uses the
+# WAR attached to the release, so the image holds exactly the released file.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release to build the image for, e.g. 2.541.3-k2
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write      # push to ghcr.io
+      id-token: write      # provenance attestation
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - name: Check the tag
+        run: |
+          case "$TAG" in
+            2.*-k[0-9]*) ;;
+            *) echo "::error::Unexpected release tag '$TAG'"; exit 1 ;;
+          esac
+          line=${TAG%.*}            # 2.541.3-k2 -> 2.541
+          line=${line%%-*}
+          echo "LINE=$line" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - name: WAR from the release
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D docker -p jenkins.war -p sha256sums.txt
+          (cd docker && sha256sum -c sha256sums.txt)
+          echo "WAR_SHA256=$(cut -d' ' -f1 docker/sha256sums.txt)" >> "$GITHUB_ENV"
+          echo "REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Smoke test (amd64)
+        run: |
+          docker build -q -t smoke docker \
+            --build-arg VERSION="$TAG" --build-arg WAR_SHA256="$WAR_SHA256" --build-arg REVISION="$REVISION"
+          docker run -d --name smoke -p 8080:8080 -e JAVA_OPTS=-Djenkins.install.runSetupWizard=false smoke
+          for _ in $(seq 1 60); do
+            v=$(curl -s -o /dev/null -D - http://localhost:8080/login | tr -d '\r' | sed -n 's/^[Xx]-[Jj]enkins: //p')
+            [ -n "$v" ] && break
+            sleep 2
+          done
+          docker logs smoke 2>&1 | tail -20
+          if [ "$v" != "$TAG" ]; then
+            echo "::error::Expected X-Jenkins: $TAG, got '$v'"
+            exit 1
+          fi
+
+      - name: Build and push (amd64, arm64, s390x, ppc64le)
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --name multi
+          docker buildx build docker --push --metadata-file meta.json \
+            --platform linux/amd64,linux/arm64,linux/s390x,linux/ppc64le \
+            --build-arg VERSION="$TAG" --build-arg WAR_SHA256="$WAR_SHA256" --build-arg REVISION="$REVISION" \
+            -t "$IMAGE:$TAG" -t "$IMAGE:$LINE"
+          echo "DIGEST=$(jq -r '."containerimage.digest"' meta.json)" >> "$GITHUB_ENV"
+
+      - name: Attest image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "Pushed \`$IMAGE:$TAG\` and \`$IMAGE:$LINE\`"
+            echo
+            echo "Digest: \`$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"

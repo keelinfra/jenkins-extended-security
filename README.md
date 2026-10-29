@@ -81,7 +81,7 @@ gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
 
 ## Release
 
-There are no releases yet. [`release.yml`](.github/workflows/release.yml) is ready for when one is needed. It runs only by hand (Actions → Release → Run workflow on a `stable-*` branch) and:
+[`release.yml`](.github/workflows/release.yml) runs only by hand (Actions → Release → Run workflow on a `stable-*` branch) and:
 
 - refuses a commit without a green CI run,
 - rebuilds the WAR on a fresh runner and checks it is byte-identical to the one CI built,
@@ -89,6 +89,8 @@ There are no releases yet. [`release.yml`](.github/workflows/release.yml) is rea
 - creates a **draft** release named after the WAR version (for example `2.541.3-k2`) with the WAR, SBOM, `sha256sums.txt` and `build-info.txt`.
 
 Nothing is public until someone publishes the draft. The CI artifact it compares against is kept for 30 days, so release within 30 days of the commit, or run CI again by hand first (Actions → CI → Run workflow).
+
+Publishing the release starts [`image.yml`](.github/workflows/image.yml). It builds [`docker/Dockerfile`](docker/Dockerfile): the official `jenkins/jenkins:2.541.3-jdk17` image, pinned by digest, with the released WAR in place of the stock one. It checks the WAR against the release's `sha256sums.txt`, starts the image once to check the version, then pushes `ghcr.io/keelinfra/jenkins-extended-security:<version>` and `:2.541` for amd64, arm64, s390x and ppc64le, with a provenance attestation.
 
 ## Security
 
