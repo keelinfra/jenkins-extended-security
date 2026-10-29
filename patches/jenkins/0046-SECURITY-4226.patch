@@ -1,0 +1,286 @@
+From a02448609d5cc50ec8c6d71069cd053febad2fee Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 12:15:26 +0000
+Subject: [PATCH 46/49] [SECURITY-4226]
+
+Conflict resolved for 2.541.x: OldDataMonitor.report has no Run check there,
+and only the shouldReportUnloadableDataErrors check is added.
+
+(cherry picked from commit c2cb64475a938cd7a5fa6b6a9823ba8582246b46)
+---
+ .../java/hudson/diagnosis/OldDataMonitor.java |   7 +
+ .../util/RobustReflectionConverter.java       |  10 +-
+ .../jenkins/security/Security4226Test.java    | 200 ++++++++++++++++++
+ 3 files changed, 214 insertions(+), 3 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security4226Test.java
+
+diff --git a/core/src/main/java/hudson/diagnosis/OldDataMonitor.java b/core/src/main/java/hudson/diagnosis/OldDataMonitor.java
+index e38555a2a4..d68444cbec 100644
+--- a/core/src/main/java/hudson/diagnosis/OldDataMonitor.java
++++ b/core/src/main/java/hudson/diagnosis/OldDataMonitor.java
+@@ -164,7 +164,11 @@ public class OldDataMonitor extends AdministrativeMonitor {
+      *            the data in its new format to disk.
+      * @param version Hudson release when the data structure changed.
+      */
++    @Restricted(NoExternalUse.class)
+     public static void report(Saveable obj, String version) {
++        if (!RobustReflectionConverter.shouldReportUnloadableDataErrors()) {
++            return;
++        }
+         OldDataMonitor odm = get(Jenkins.get());
+         try {
+             SaveableReference ref = referTo(obj);
+@@ -205,6 +209,9 @@ public class OldDataMonitor extends AdministrativeMonitor {
+      * @param errors Exception(s) thrown while loading, regarding the unreadable classes/fields.
+      */
+     public static void report(Saveable obj, Collection<Throwable> errors) {
++        if (!RobustReflectionConverter.shouldReportUnloadableDataErrors()) {
++            return;
++        }
+         StringBuilder buf = new StringBuilder();
+         int i = 0;
+         for (Throwable e : errors) {
+diff --git a/core/src/main/java/hudson/util/RobustReflectionConverter.java b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+index f6ff6b458c..a45cb2bc4b 100644
+--- a/core/src/main/java/hudson/util/RobustReflectionConverter.java
++++ b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+@@ -73,6 +73,8 @@ import jenkins.util.xstream.CriticalXStreamException;
+ import net.jcip.annotations.GuardedBy;
+ import org.acegisecurity.Authentication;
+ import org.jvnet.tiger_types.Types;
++import org.kohsuke.accmod.Restricted;
++import org.kohsuke.accmod.restrictions.NoExternalUse;
+ 
+ /**
+  * Custom {@link ReflectionConverter} that handle errors more gracefully.
+@@ -416,8 +418,8 @@ public class RobustReflectionConverter implements Converter {
+             reader.moveUp();
+         }
+ 
+-        // Report any class/field errors in Saveable objects if it happens during loading of existing data from disk
+-        if (shouldReportUnloadableDataForCurrentUser() && context.get("ReadError") != null && context.get("Saveable") == result) {
++        // Report any class/field errors in Saveable objects
++        if (context.get("ReadError") != null && context.get("Saveable") == result) {
+             // Avoid any error in OldDataMonitor to be catastrophic. See JENKINS-62231 and JENKINS-59582
+             // The root cause is the OldDataMonitor extension is not ready before a plugin triggers an error, for
+             // example when trying to load a field that was created by a new version and you downgrade to the previous
+@@ -449,7 +451,9 @@ public class RobustReflectionConverter implements Converter {
+      *
+      * @return whether the current user authentication is allowed to have errors loading data reported.
+      */
+-    private static boolean shouldReportUnloadableDataForCurrentUser() {
++    @Restricted(NoExternalUse.class)
++    public static boolean shouldReportUnloadableDataErrors() {
++        // TODO This should probably be moved to ODM
+         if (RECORD_FAILURES_FOR_ALL_AUTHENTICATIONS) {
+             return true;
+         }
+diff --git a/test/src/test/java/jenkins/security/Security4226Test.java b/test/src/test/java/jenkins/security/Security4226Test.java
+new file mode 100644
+index 0000000000..c3a9234cdc
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security4226Test.java
+@@ -0,0 +1,200 @@
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.equalTo;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import hudson.ExtensionList;
++import hudson.diagnosis.OldDataMonitor;
++import hudson.model.ListView;
++import hudson.model.Saveable;
++import hudson.model.User;
++import hudson.model.View;
++import java.io.StringReader;
++import java.util.Map;
++import java.util.Set;
++import jenkins.model.Jenkins;
++import org.htmlunit.FailingHttpStatusCodeException;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.WebRequest;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
++import org.springframework.security.core.Authentication;
++import org.springframework.security.core.context.SecurityContextHolder;
++
++@Issue("SECURITY-4226")
++@WithJenkins
++class Security4226Test {
++
++    private static final String CREATE_VIEW = "create_view";
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    @Test
++    void reportVersionGatedForNonSystemUser() {
++        setupSecurity();
++        OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        Saveable fakeSaveable = () -> {};
++
++        asUser("reader", () -> OldDataMonitor.report(fakeSaveable, "1.106"));
++
++        assertTrue(odm.getData().isEmpty(), "report(Saveable, String) must not store data for non-SYSTEM user");
++    }
++
++    @Test
++    void reportVersionAllowedForSystemUser() {
++        OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        Saveable fakeSaveable = () -> {};
++
++        OldDataMonitor.report(fakeSaveable, "1.106");
++
++        assertEquals(1, odm.getData().size(), "report(Saveable, String) must store data for SYSTEM user");
++        odm.doDiscard();
++    }
++
++    @Test
++    void reportErrorsGatedForNonSystemUser() {
++        setupSecurity();
++        OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        Saveable fakeSaveable = () -> {};
++
++        asUser("reader", () -> OldDataMonitor.report(fakeSaveable, Set.of(new Exception("test"))));
++
++        assertTrue(odm.getData().isEmpty(), "report(Saveable, Collection) must not store data for non-SYSTEM user");
++    }
++
++    @Test
++    void legacyNestedClassNameDoesNotPopulateMonitorForNonSystemUser() {
++        setupSecurity();
++        OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++
++        String xml = """
++                <hudson.model.User>
++                  <id>foo</id>
++                  <fullName>Foo User</fullName>
++                  <properties>
++                    <hudson.model.Cause-UserIdCause/>
++                  </properties>
++                </hudson.model.User>
++                """;
++
++        asUser("reader", () -> Jenkins.XSTREAM.fromXML(new StringReader(xml)));
++
++        assertTrue(odm.getData().isEmpty(),
++                "XStream2 legacy nested class name must not populate OldDataMonitor for non-SYSTEM user");
++    }
++
++    @Test
++    void badIncludeRegexDoesNotPopulateMonitorForNonSystemUser() {
++        setupSecurity();
++        OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++
++        String xml = """
++                <hudson.model.ListView>
++                  <name>test</name>
++                  <includeRegex>(</includeRegex>
++                </hudson.model.ListView>
++                """;
++
++        asUser("reader", () -> {
++            ListView view = (ListView) Jenkins.XSTREAM.fromXML(new StringReader(xml));
++            assertNull(view.getIncludeRegex(), "Bad regex should be cleared");
++        });
++
++        assertTrue(odm.getData().isEmpty(),
++                "ListView bad includeRegex must not populate OldDataMonitor for non-SYSTEM user");
++    }
++
++    @Test
++    void createViewWithLegacyNestedClassNamePayload() throws Exception {
++        setupSecurity();
++
++        JenkinsRule.WebClient wc = j.createWebClient();
++        wc.login(CREATE_VIEW);
++
++        WebRequest req = new WebRequest(wc.createCrumbedUrl("createView?name=nonexistent"), HttpMethod.POST);
++        req.setAdditionalHeader("Content-Type", "application/xml");
++        req.setRequestBody("""
++                <hudson.model.User>
++                  <id>foo</id>
++                  <fullName>Foo User</fullName>
++                  <properties>
++                    <hudson.model.Cause-UserIdCause/>
++                  </properties>
++                </hudson.model.User>
++                """);
++
++        FailingHttpStatusCodeException e = assertThrows(FailingHttpStatusCodeException.class, () -> wc.getPage(req));
++        assertThat(e.getStatusCode(), equalTo(500));
++
++        OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        Map<Saveable, OldDataMonitor.VersionRange> data = odm.getData();
++        assertThat("Forged user via legacy nested class name must not appear in Old Data Monitor", data.size(), equalTo(0));
++
++        View view = j.getInstance().getView("nonexistent");
++        assertNull(view, "Should not have created view.");
++
++        User.AllUsers.scanAll();
++        User badUser = User.getById("foo", false);
++        assertNull(badUser, "Should not have created user.");
++    }
++
++    @Test
++    void createViewWithBadIncludeRegex() throws Exception {
++        setupSecurity();
++
++        JenkinsRule.WebClient wc = j.createWebClient();
++        wc.login(CREATE_VIEW);
++
++        WebRequest req = new WebRequest(wc.createCrumbedUrl("createView?name=creatednew"), HttpMethod.POST);
++        req.setAdditionalHeader("Content-Type", "application/xml");
++        req.setRequestBody("""
++                <hudson.model.ListView>
++                  <name>creatednew</name>
++                  <includeRegex>(</includeRegex>
++                </hudson.model.ListView>
++                """);
++
++        wc.getPage(req);
++
++        OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        Map<Saveable, OldDataMonitor.VersionRange> data = odm.getData();
++        assertThat("ListView with bad includeRegex must not appear in Old Data Monitor", data.size(), equalTo(0));
++
++        ListView view = (ListView) j.getInstance().getView("creatednew");
++        assertNotNull(view, "View should have been created.");
++        assertNull(view.getIncludeRegex(), "Bad includeRegex should have been cleared.");
++    }
++
++    private void setupSecurity() {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(View.CREATE, View.READ, Jenkins.READ).everywhere().to(CREATE_VIEW)
++                .grant(Jenkins.READ).everywhere().toEveryone());
++    }
++
++    private static void asUser(String username, Runnable action) {
++        Authentication original = SecurityContextHolder.getContext().getAuthentication();
++        try {
++            SecurityContextHolder.getContext().setAuthentication(
++                    new UsernamePasswordAuthenticationToken(username, username));
++            action.run();
++        } finally {
++            SecurityContextHolder.getContext().setAuthentication(original);
++        }
++    }
++}
+-- 
+2.43.0
+

@@ -1,0 +1,476 @@
+From cd032b92507616780fb8bcc83b6fb8b0ff39f17f Mon Sep 17 00:00:00 2001
+From: Daniel Beck <1831569+daniel-beck@users.noreply.github.com>
+Date: Fri, 3 Jul 2026 16:58:35 +0200
+Subject: [PATCH 47/49] Restrict elements in PersistedList and COWL on
+ deserialization (#26918)
+
+Co-authored-by: Daniel Beck <daniel-beck@users.noreply.github.com>
+Co-authored-by: Mark Waite <mark.earl.waite@gmail.com>
+Not a security fix by itself. Backported because SECURITY-4225 builds on it.
+Conflict in test imports resolved.
+
+(cherry picked from commit fab7b78606aec40fbec09b51d98960674ffb5631)
+---
+ .../java/hudson/util/CopyOnWriteList.java     |   4 +
+ .../main/java/hudson/util/PersistedList.java  |  12 +-
+ .../util/RobustReflectionConverter.java       |   6 +
+ .../java/hudson/util/PersistedListTest.java   | 159 +++++++++++++++
+ .../util/RobustReflectionConverterTest.java   | 184 +++++++++++++++++-
+ 5 files changed, 359 insertions(+), 6 deletions(-)
+ create mode 100644 core/src/test/java/hudson/util/PersistedListTest.java
+
+diff --git a/core/src/main/java/hudson/util/CopyOnWriteList.java b/core/src/main/java/hudson/util/CopyOnWriteList.java
+index 39644f0bfa..ba52417315 100644
+--- a/core/src/main/java/hudson/util/CopyOnWriteList.java
++++ b/core/src/main/java/hudson/util/CopyOnWriteList.java
+@@ -203,6 +203,10 @@ public class CopyOnWriteList<E> implements Iterable<E> {
+ 
+         @Override
+         public boolean canConvert(Class type) {
++            return canConvertRobust(type);
++        }
++
++        static boolean canConvertRobust(Class<?> type) {
+             return type == CopyOnWriteList.class;
+         }
+ 
+diff --git a/core/src/main/java/hudson/util/PersistedList.java b/core/src/main/java/hudson/util/PersistedList.java
+index 5a93a69641..cb8842b441 100644
+--- a/core/src/main/java/hudson/util/PersistedList.java
++++ b/core/src/main/java/hudson/util/PersistedList.java
+@@ -266,8 +266,12 @@ public class PersistedList<T> extends AbstractList<T> {
+         CopyOnWriteList.ConverterImpl copyOnWriteListConverter;
+ 
+         public ConverterImpl(Mapper mapper) {
++            this(mapper, null);
++        }
++
++        ConverterImpl(Mapper mapper, Class<?> elementType) {
+             super(mapper);
+-            copyOnWriteListConverter = new CopyOnWriteList.ConverterImpl(mapper());
++            copyOnWriteListConverter = new CopyOnWriteList.ConverterImpl(mapper(), elementType);
+         }
+ 
+         @Override
+@@ -276,6 +280,12 @@ public class PersistedList<T> extends AbstractList<T> {
+             return PersistedList.class.isAssignableFrom(type);
+         }
+ 
++        static boolean canConvertRobust(Class<?> type) {
++            // Subtypes do not use this converter by default due to how AssociatedConverterImpl works
++            // So for RobustReflectionConverter#unmarshalField, expect class equality
++            return type == PersistedList.class;
++        }
++
+         @Override
+         public void marshal(Object source, HierarchicalStreamWriter writer, MarshallingContext context) {
+             for (Object o : (PersistedList) source)
+diff --git a/core/src/main/java/hudson/util/RobustReflectionConverter.java b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+index a45cb2bc4b..d08bc66d4a 100644
+--- a/core/src/main/java/hudson/util/RobustReflectionConverter.java
++++ b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+@@ -563,6 +563,12 @@ public class RobustReflectionConverter implements Converter {
+             } else if (DescribableList.ConverterImpl.canConvertRobust(type)) {
+                 Class<?> elementType = extractElementType(field.getGenericType(), DescribableList.class);
+                 converter = new DescribableList.ConverterImpl(mapper, elementType);
++            } else if (PersistedList.ConverterImpl.canConvertRobust(type)) {
++                Class<?> elementType = extractElementType(field.getGenericType(), PersistedList.class);
++                converter = new PersistedList.ConverterImpl(mapper, elementType);
++            } else if (CopyOnWriteList.ConverterImpl.canConvertRobust(type)) {
++                Class<?> elementType = extractElementType(field.getGenericType(), CopyOnWriteList.class);
++                converter = new CopyOnWriteList.ConverterImpl(mapper, elementType);
+             }
+         }
+         return context.convertAnother(result, type, converter);
+diff --git a/core/src/test/java/hudson/util/PersistedListTest.java b/core/src/test/java/hudson/util/PersistedListTest.java
+new file mode 100644
+index 0000000000..6f0b1916d0
+--- /dev/null
++++ b/core/src/test/java/hudson/util/PersistedListTest.java
+@@ -0,0 +1,159 @@
++package hudson.util;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.allOf;
++import static org.hamcrest.Matchers.contains;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.empty;
++import static org.hamcrest.Matchers.equalTo;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.not;
++
++import hudson.model.Describable;
++import hudson.model.Descriptor;
++import org.junit.jupiter.api.Test;
++
++class PersistedListTest {
++    @Test
++    void associatedConverterUsed() {
++        XStream2 xstream = new XStream2();
++
++        final Data data = new Data();
++        data.strings = new PersistedList<>();
++        data.strings.add("foo");
++        final String xml = xstream.toXML(data);
++
++        assertThat(xml, allOf(not(containsString("<data>")), not(containsString("</data>")), not(containsString("<owner"))));
++
++        String craftedXml = xml.replace("<string>foo</string>", "<int>42</int>");
++        assertThat(xml, not(equalTo(craftedXml)));
++
++        final Object o = xstream.fromXML(craftedXml);
++        assertThat(o, instanceOf(Data.class));
++        final PersistedList<String> list = ((Data) o).strings;
++        assertThat(list.getClass(), is(PersistedList.class));
++        assertThat(list, empty());
++    }
++
++    // Arguably not the "expected" behavior.
++    @Test
++    void defaultSerializationForSubclass() {
++        XStream2 xstream = new XStream2();
++
++        final Data data = new Data();
++        data.strings = new PersistedListSubtype<>();
++        data.strings.add("foo");
++        final String xml = xstream.toXML(data);
++
++        assertThat(xml, allOf(containsString("<data>"), containsString("</data>"), containsString("<owner")));
++        {
++            final Object o = xstream.fromXML(xml);
++            assertThat(o, instanceOf(Data.class));
++            final PersistedList<String> list = ((Data) o).strings;
++            assertThat(list, instanceOf(PersistedListSubtype.class));
++            assertThat(list, not(empty()));
++        }
++
++        String craftedXml = xml.replace("<string>foo</string>", "<int>42</int>");
++        assertThat(xml, not(equalTo(craftedXml)));
++
++        final Object o = xstream.fromXML(craftedXml);
++        assertThat(o, instanceOf(Data.class));
++        final PersistedList<String> list = ((Data) o).strings;
++        assertThat(list, instanceOf(PersistedListSubtype.class));
++        assertThat(list, contains(instanceOf(Integer.class))); // TODO FIXME this seems wrong
++    }
++
++    @Test
++    void deserializeSubtypeDefaultConverter() {
++        XStream2 xstream = new XStream2();
++
++        final String serialized = """
++                <hudson.util.PersistedListTest_-Data>
++                  <strings class="hudson.util.PersistedListTest$PersistedListSubtype">
++                    <data>
++                      <string>foo</string>
++                    </data>
++                    <owner class="null"/>
++                  </strings>
++                </hudson.util.PersistedListTest_-Data>""";
++        final Object fromXML = xstream.fromXML(serialized);
++        assertThat(fromXML, instanceOf(Data.class));
++        assertThat(((Data) fromXML).strings, contains("foo"));
++    }
++
++    @Test
++    void deserializeSubtypeDefaultConverterWrongType() {
++        XStream2 xstream = new XStream2();
++
++        final String serialized = """
++                <hudson.util.PersistedListTest_-Data>
++                  <strings class="hudson.util.PersistedListTest$PersistedListSubtype">
++                    <data>
++                      <int>12</int>
++                    </data>
++                    <owner class="null"/>
++                  </strings>
++                </hudson.util.PersistedListTest_-Data>""";
++        final Object fromXML = xstream.fromXML(serialized);
++        assertThat(fromXML, instanceOf(Data.class));
++        final PersistedList<String> strings = ((Data) fromXML).strings;
++        assertThat(strings, contains(instanceOf(Integer.class))); // TODO FIXME this seems wrong
++    }
++
++    @Test
++    void deserializeCustomConverter() {
++        XStream2 xstream = new XStream2();
++
++        final String serialized = """
++                <hudson.util.PersistedListTest_-Data>
++                  <strings>
++                    <string>foo</string>
++                  </strings>
++                </hudson.util.PersistedListTest_-Data>""";
++        final Object fromXML = xstream.fromXML(serialized);
++        assertThat(fromXML, instanceOf(Data.class));
++        assertThat(((Data) fromXML).strings, contains("foo"));
++    }
++
++    @Test
++    void deserializeCustomConverterWrongType() {
++        XStream2 xstream = new XStream2();
++
++        final String serialized = """
++                <hudson.util.PersistedListTest_-Data>
++                  <strings>
++                    <int>12</int>
++                  </strings>
++                </hudson.util.PersistedListTest_-Data>""";
++        final Object fromXML = xstream.fromXML(serialized);
++        assertThat(fromXML, instanceOf(Data.class));
++        assertThat(((Data) fromXML).strings, empty());
++    }
++
++    private static class PersistedListSubtype<T, E> extends PersistedList<E> {
++        T getThing() {
++            return null;
++        }
++    }
++
++    private static class Data {
++        private PersistedList<String> strings;
++    }
++
++    // TODO Test with subtyped field
++    private static class SubtypeData {
++        private PersistedListSubtype<Object, String> strings;
++    }
++
++    public static class MyDescribable implements Describable<MyDescribable> {
++        public static class DescriptorImpl extends Descriptor<MyDescribable> {
++        }
++    }
++
++    public static class MyOtherDescribable implements Describable<MyOtherDescribable> {
++        public static class DescriptorImpl extends Descriptor<MyOtherDescribable> {
++        }
++    }
++}
+diff --git a/test/src/test/java/hudson/util/RobustReflectionConverterTest.java b/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
+index bd81a52ac1..aa7715d26e 100644
+--- a/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
++++ b/test/src/test/java/hudson/util/RobustReflectionConverterTest.java
+@@ -26,10 +26,12 @@ package hudson.util;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.Matchers.allOf;
+-import static org.hamcrest.Matchers.contains;
+ import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.empty;
++import static org.hamcrest.Matchers.hasItem;
+ import static org.hamcrest.Matchers.instanceOf;
+ import static org.hamcrest.Matchers.not;
++import static org.hamcrest.Matchers.nullValue;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertNotEquals;
+ import static org.junit.jupiter.api.Assertions.assertNotNull;
+@@ -49,14 +51,18 @@ import hudson.model.JobProperty;
+ import hudson.model.JobPropertyDescriptor;
+ import hudson.model.ListView;
+ import hudson.model.Saveable;
+-import hudson.model.ViewProperty;
+ import hudson.security.ACL;
+ import java.io.ByteArrayInputStream;
++import java.io.IOException;
++import java.lang.annotation.Retention;
++import java.lang.annotation.RetentionPolicy;
+ import java.net.HttpURLConnection;
+ import java.net.URI;
+ import java.nio.charset.Charset;
++import java.nio.charset.StandardCharsets;
+ import java.util.Map;
+ import java.util.Set;
++import javax.xml.transform.stream.StreamSource;
+ import jenkins.model.Jenkins;
+ import net.sf.json.JSONObject;
+ import org.htmlunit.HttpMethod;
+@@ -405,9 +411,7 @@ class RobustReflectionConverterTest {
+ 
+         ListView view = (ListView) Items.XSTREAM2.fromXML(maliciousXml);
+ 
+-        assertThat(view.getProperties(), not(contains(instanceOf(ViewProperty.class))));
+-        assertThat(view.getProperties(), not(contains(instanceOf(TypeA.class))));
+-        assertThat(view.getProperties(), not(contains(instanceOf(TypeB.class))));
++        assertThat(view.getProperties(), empty());
+ 
+         // Verify the rejected data is recorded in OldDataMonitor
+         final OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
+@@ -422,4 +426,174 @@ class RobustReflectionConverterTest {
+                 containsString("class               : hudson.util.RobustReflectionConverterTest$TypeA"),
+                 containsString("converter-type      : hudson.util.CopyOnWriteList$ConverterImpl")));
+     }
++
++    @Issue("SECURITY-3707")
++    @Test
++    void testCopyOnWriteListGenericTypeConfusion() throws Exception {
++        // TypeA is not a JobProperty
++        String maliciousXml = "<?xml version='1.1' encoding='UTF-8'?>"
++                + "<project>"
++                + "<properties>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "<value>malicious</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "</properties>"
++                + "</project>";
++
++        // Deserialize - TypeA should be rejected since it's not a JobProperty
++        FreeStyleProject p = r.createFreeStyleProject();
++        p.updateByXml(new StreamSource(
++                new ByteArrayInputStream(maliciousXml.getBytes(StandardCharsets.UTF_8))));
++
++        assertThat(p.getProperties().values(), empty());
++    }
++
++    @Issue("SECURITY-3707")
++    @Test
++    void testPersistedListGenericTypeConfusion() throws Exception {
++        // JobPropertyWithPersistedList.items takes TypeA, not TypeB
++        String maliciousXml = "<?xml version='1.1' encoding='UTF-8'?>"
++                + "<project>"
++                + "<properties>"
++                + "<hudson.util.RobustReflectionConverterTest_-JobPropertyWithPersistedList>"
++                + "<items>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeB>"
++                + "<value>malicious</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeB>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "<value>expected</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "</items>"
++                + "</hudson.util.RobustReflectionConverterTest_-JobPropertyWithPersistedList>"
++                + "</properties>"
++                + "</project>";
++
++        FreeStyleProject p = r.createFreeStyleProject();
++        p.updateByXml(new StreamSource(new ByteArrayInputStream(maliciousXml.getBytes(StandardCharsets.UTF_8))));
++
++        JobPropertyWithPersistedList property = p.getProperty(JobPropertyWithPersistedList.class);
++        assertThat(property, not(nullValue()));
++
++        assertThat(property.items, not(hasItem(instanceOf(TypeB.class))));
++        assertThat(property.items, hasItem(instanceOf(TypeA.class)));
++    }
++
++    @SuppressWarnings("checkstyle:redundantmodifier")
++    public static class JobPropertyWithPersistedList extends JobProperty<FreeStyleProject> {
++        public PersistedList<TypeA> items = new PersistedList<>();
++
++        @TestExtension
++        public static class DescriptorImpl extends JobPropertyDescriptor {
++            @Override
++            public String getDisplayName() {
++                return "Job Property With Persisted List";
++            }
++        }
++    }
++
++    @Test
++    void testCopyOnWriteListGenericTypeConfusionOldDataMonitor() throws Exception {
++        // TypeWithCopyOnWriteList takes TypeA elements, but deserialize TypeB
++        String maliciousXml = "<?xml version='1.1' encoding='UTF-8'?>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeWithCopyOnWriteList>"
++                + "<items>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeB>"
++                + "<value>malicious</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeB>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "<value>expected</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "</items>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeWithCopyOnWriteList>";
++
++        TypeWithCopyOnWriteList obj = (TypeWithCopyOnWriteList) Items.XSTREAM2.fromXML(maliciousXml);
++
++        assertThat(obj.items, not(hasItem(instanceOf(TypeB.class))));
++        assertThat(obj.items, hasItem(instanceOf(TypeA.class)));
++
++        // Verify the rejected data is recorded in OldDataMonitor
++        final OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        assertTrue(odm.isActivated());
++
++        Map<Saveable, OldDataMonitor.VersionRange> data = odm.getData();
++        assertTrue(data.containsKey(obj));
++        String errorText = data.get(obj).extra;
++        assertThat(errorText, allOf(
++                containsString("message             : Invalid type for CopyOnWriteList element"),
++                containsString("required-type       : hudson.util.RobustReflectionConverterTest$TypeA"),
++                containsString("class               : hudson.util.RobustReflectionConverterTest$TypeB"),
++                containsString("converter-type      : hudson.util.CopyOnWriteList$ConverterImpl")));
++    }
++
++    @Test
++    void testPersistedListGenericTypeConfusionOldDataMonitor() throws Exception {
++        // TypeWithPersistedList takes TypeA elements, but deserialize TypeB
++        String maliciousXml = "<?xml version='1.1' encoding='UTF-8'?>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeWithPersistedList>"
++                + "<items>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeB>"
++                + "<value>malicious</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeB>"
++                + "<hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "<value>expected</value>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeA>"
++                + "</items>"
++                + "</hudson.util.RobustReflectionConverterTest_-TypeWithPersistedList>";
++
++        TypeWithPersistedList obj = (TypeWithPersistedList) Items.XSTREAM2.fromXML(maliciousXml);
++
++        assertThat(obj.items, not(hasItem(instanceOf(TypeB.class))));
++        assertThat(obj.items, hasItem(instanceOf(TypeA.class)));
++
++        // Verify the rejected data is recorded in OldDataMonitor
++        final OldDataMonitor odm = ExtensionList.lookupSingleton(OldDataMonitor.class);
++        assertTrue(odm.isActivated());
++
++        Map<Saveable, OldDataMonitor.VersionRange> data = odm.getData();
++        assertTrue(data.containsKey(obj));
++        String errorText = data.get(obj).extra;
++        assertThat(errorText, allOf(
++                containsString("message             : Invalid type for CopyOnWriteList element"),
++                containsString("required-type       : hudson.util.RobustReflectionConverterTest$TypeA"),
++                containsString("class               : hudson.util.RobustReflectionConverterTest$TypeB"),
++                containsString("converter-type      : hudson.util.CopyOnWriteList$ConverterImpl")));
++    }
++
++    @SuppressWarnings("checkstyle:redundantmodifier")
++    public static class TypeWithCopyOnWriteList implements Describable<TypeWithCopyOnWriteList>, Saveable {
++        public CopyOnWriteList<TypeA> items = new CopyOnWriteList<>();
++
++        @Override
++        public void save() throws IOException {
++            // No-op for testing
++        }
++
++        @TestExtension
++        public static class DescriptorImpl extends Descriptor<TypeWithCopyOnWriteList> {
++            @NonNull
++            @Override
++            public String getDisplayName() {
++                return "Type With CopyOnWriteList";
++            }
++        }
++    }
++
++    @SuppressWarnings("checkstyle:redundantmodifier")
++    public static class TypeWithPersistedList implements Describable<TypeWithPersistedList>, Saveable {
++        public PersistedList<TypeA> items = new PersistedList<>();
++
++        @Override
++        public void save() throws IOException {
++            // No-op for testing
++        }
++
++        @TestExtension
++        public static class DescriptorImpl extends Descriptor<TypeWithPersistedList> {
++            @NonNull
++            @Override
++            public String getDisplayName() {
++                return "Type With PersistedList";
++            }
++        }
++    }
+ }
+-- 
+2.43.0
+

@@ -1,0 +1,573 @@
+From 910ca94a69dfb14c6d0df9c2ecb3ccca057d3c1c Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 12:15:20 +0000
+Subject: [PATCH 40/49] [SECURITY-4125]
+
+(cherry picked from commit 58eca68b71e254efa34a9b4aad69cd0c5b21f8a1)
+---
+ .../util/RobustReflectionConverter.java       |  14 +-
+ core/src/main/java/hudson/util/XStream2.java  |  36 ++-
+ .../jenkins/security/Security4125Test.java    | 266 ++++++++++++++++++
+ .../jenkins/security/Security4125Test.java    | 177 ++++++++++++
+ 4 files changed, 490 insertions(+), 3 deletions(-)
+ create mode 100644 core/src/test/java/jenkins/security/Security4125Test.java
+ create mode 100644 test/src/test/java/jenkins/security/Security4125Test.java
+
+diff --git a/core/src/main/java/hudson/util/RobustReflectionConverter.java b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+index a3b4ff4f77..bfa25f7905 100644
+--- a/core/src/main/java/hudson/util/RobustReflectionConverter.java
++++ b/core/src/main/java/hudson/util/RobustReflectionConverter.java
+@@ -48,6 +48,7 @@ import edu.umd.cs.findbugs.annotations.NonNull;
+ import hudson.diagnosis.OldDataMonitor;
+ import hudson.model.PersistenceRoot;
+ import hudson.model.Saveable;
++import hudson.remoting.ClassFilter;
+ import hudson.security.ACL;
+ import java.lang.reflect.Field;
+ import java.lang.reflect.Modifier;
+@@ -626,8 +627,17 @@ public class RobustReflectionConverter implements Converter {
+ 
+     protected Object instantiateNewInstance(HierarchicalStreamReader reader, UnmarshallingContext context) {
+         String readResolveValue = reader.getAttribute(mapper.aliasForAttribute("resolves-to"));
+-
+-        Class type = readResolveValue != null ? mapper.realClass(readResolveValue) : context.getRequiredType();
++        Class type;
++        if (readResolveValue != null) {
++            type = mapper.realClass(readResolveValue);
++            String name = type.getName();
++            if (ClassFilter.DEFAULT.isBlacklisted(name) || ClassFilter.DEFAULT.isBlacklisted(type)) {
++                final String msg = "Refusing to instantiate resolves-to type '" + name + "'";
++                throw new CriticalXStreamException(new XStreamException(msg));
++            }
++        } else {
++            type = context.getRequiredType();
++        }
+ 
+         Object currentObject = context.currentObject();
+         if (currentObject != null) {
+diff --git a/core/src/main/java/hudson/util/XStream2.java b/core/src/main/java/hudson/util/XStream2.java
+index 24b916fe05..d2aad77904 100644
+--- a/core/src/main/java/hudson/util/XStream2.java
++++ b/core/src/main/java/hudson/util/XStream2.java
+@@ -51,6 +51,10 @@ import com.thoughtworks.xstream.mapper.CannotResolveClassException;
+ import com.thoughtworks.xstream.mapper.Mapper;
+ import com.thoughtworks.xstream.mapper.MapperWrapper;
+ import com.thoughtworks.xstream.security.AnyTypePermission;
++import com.thoughtworks.xstream.security.ForbiddenClassException;
++import com.thoughtworks.xstream.security.InterfaceTypePermission;
++import com.thoughtworks.xstream.security.NoTypePermission;
++import com.thoughtworks.xstream.security.NullPermission;
+ import edu.umd.cs.findbugs.annotations.CheckForNull;
+ import edu.umd.cs.findbugs.annotations.NonNull;
+ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+@@ -86,6 +90,7 @@ import javax.xml.stream.XMLInputFactory;
+ import javax.xml.stream.XMLOutputFactory;
+ import jenkins.model.Jenkins;
+ import jenkins.util.SystemProperties;
++import jenkins.util.xstream.CriticalXStreamException;
+ import jenkins.util.xstream.SafeURLConverter;
+ import org.kohsuke.accmod.Restricted;
+ import org.kohsuke.accmod.restrictions.NoExternalUse;
+@@ -109,6 +114,20 @@ public class XStream2 extends XStream {
+     public static final String COLLECTION_UPDATE_LIMIT_PROPERTY_NAME = XStream2.class.getName() + ".collectionUpdateLimit";
+     private static final int COLLECTION_UPDATE_LIMIT_DEFAULT_VALUE = 5;
+ 
++    /**
++     * Escape hatch: set {@code hudson.util.XStream2.SUPPRESS_TYPE_PERMISSION=true} to restore the
++     * pre-SECURITY-4125 behaviour of allowing all types through XStream's TypePermission layer.
++     * The {@link RobustReflectionConverter} {@code resolves-to} check introduced by SECURITY-4125
++     * remains active regardless of this flag and provides a second layer of defence.
++     *
++     * <p>This flag is evaluated once at {@code XStream2} construction time; changing the system
++     * property after the JVM has started has no effect on existing instances (including
++     * {@code Jenkins.XSTREAM2}).  A full restart is required for this escape hatch to take effect.
++     */
++    @SuppressFBWarnings("MS_SHOULD_BE_FINAL")
++    @Restricted(NoExternalUse.class)
++    public static /* non-final for tests */ boolean SUPPRESS_TYPE_PERMISSION = SystemProperties.getBoolean(XStream2.class.getName() + ".SUPPRESS_TYPE_PERMISSION");
++
+     private RobustReflectionConverter reflectionConverter;
+     private final ThreadLocal<Boolean> oldData = new ThreadLocal<>();
+     private final @CheckForNull ClassOwnership classOwnership;
+@@ -332,7 +351,22 @@ public class XStream2 extends XStream {
+         registerConverter(new AssociatedConverterImpl(this), -10);
+ 
+         registerConverter(new BlacklistedTypesConverter(), PRIORITY_VERY_HIGH); // SECURITY-247 defense
+-        addPermission(AnyTypePermission.ANY); // covered by JEP-200, avoid securityWarningGiven
++        if (SUPPRESS_TYPE_PERMISSION) {
++            addPermission(AnyTypePermission.ANY); // covered by JEP-200, avoid securityWarningGiven
++        } else {
++            addPermission(NoTypePermission.NONE);
++            addPermission(type -> {
++                // TODO What about abstract classes?
++                String typeName = type.getName();
++                if (ClassFilter.DEFAULT.isBlacklisted(typeName) || ClassFilter.DEFAULT.isBlacklisted(type)) {
++                    throw new CriticalXStreamException(new ForbiddenClassException(type));
++                }
++                // Allow anything allowed by ClassFilter, we still apply Converter-based restrictions
++                return true;
++            });
++            addPermission(NullPermission.NULL);
++            addPermission(InterfaceTypePermission.INTERFACES);
++        }
+ 
+         registerConverter(new DynamicProxyConverter(getMapper(), new ClassLoaderReference(getClassLoader())) { // SECURITY-105 defense
+             @Override public boolean canConvert(Class type) {
+diff --git a/core/src/test/java/jenkins/security/Security4125Test.java b/core/src/test/java/jenkins/security/Security4125Test.java
+new file mode 100644
+index 0000000000..12558190ee
+--- /dev/null
++++ b/core/src/test/java/jenkins/security/Security4125Test.java
+@@ -0,0 +1,266 @@
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.contains;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.equalTo;
++import static org.hamcrest.Matchers.hasSize;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import com.thoughtworks.xstream.security.ForbiddenClassException;
++import hudson.remoting.ClassFilter;
++import hudson.util.XStream2;
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.TreeMap;
++import jenkins.util.xstream.CriticalXStreamException;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++
++public class Security4125Test {
++
++    @Test
++    @Issue("SECURITY-4125")
++    void resolvesToBlacklistedTypeIsRejected() {
++        ClassFilter.setDefault(new ClassFilter() {
++            @Override
++            public boolean isBlacklisted(Class<?> c) {
++                return "com.google.common.collect.ImmutableSortedMultiset".equals(c.getName());
++            }
++
++            @Override
++            public boolean isBlacklisted(String name) {
++                return "com.google.common.collect.ImmutableSortedMultiset".equals(name);
++            }
++        });
++        try {
++            XStream2 xs = new XStream2();
++            xs.alias("hold", HoldRT.class);
++            CriticalXStreamException ex = assertThrows(CriticalXStreamException.class, () ->
++                    xs.fromXML("<hold><nested resolves-to=\"com.google.common.collect.ImmutableSortedMultiset\"/></hold>"));
++            assertThat(ex.getMessage(), containsString("cause-exception     : " + ForbiddenClassException.class.getName()));
++        } finally {
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void resolvesToAllowedTypeIsAccepted() {
++        ClassFilter.setDefault(ClassFilter.NONE);
++        try {
++            XStream2 xs = new XStream2();
++            xs.alias("hold", HoldRT.class);
++            HoldRT hold = (HoldRT) xs.fromXML(
++                    "<hold><nested resolves-to=\"" + RTProxy.class.getName() + "\"/></hold>");
++            assertThat(hold.nested, instanceOf(HoldRT.class));
++        } finally {
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void resolvesToBlacklistedTypeOnRootIsRejected() {
++        ClassFilter.setDefault(new ClassFilter() {
++            @Override
++            public boolean isBlacklisted(Class<?> c) {
++                return "com.google.common.collect.ImmutableSortedMultiset".equals(c.getName());
++            }
++
++            @Override
++            public boolean isBlacklisted(String name) {
++                return "com.google.common.collect.ImmutableSortedMultiset".equals(name);
++            }
++        });
++        try {
++            XStream2 xs = new XStream2();
++            xs.alias("hold", HoldRT.class);
++            final CriticalXStreamException ex = assertThrows(CriticalXStreamException.class, () ->
++                    xs.fromXML("<hold resolves-to=\"com.google.common.collect.ImmutableSortedMultiset\"/>"));
++            assertThat(ex.getMessage(), containsString("cause-exception     : com.thoughtworks.xstream.security.ForbiddenClassException"));
++            assertThat(ex.getMessage(), containsString("cause-message       : com.google.common.collect.ImmutableSortedMultiset"));
++        } finally {
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void resolvesToAllowedTypeOnRootIsAccepted() {
++        ClassFilter.setDefault(ClassFilter.NONE);
++        try {
++            XStream2 xs = new XStream2();
++            xs.alias("hold", HoldRT.class);
++            Object result = xs.fromXML("<hold resolves-to=\"" + RTProxy.class.getName() + "\"/>");
++            assertThat(result, instanceOf(HoldRT.class));
++        } finally {
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void resolvesToBlacklistedTypeIsRejectedByConverterWhenTypePermissionSuppressed() {
++        // With the TypePermission escape hatch active, RobustReflectionConverter's own check
++        // in instantiateNewInstance() must still block blacklisted resolves-to types.
++        boolean saved = XStream2.SUPPRESS_TYPE_PERMISSION;
++        ClassFilter.setDefault(new ClassFilter() {
++            @Override
++            public boolean isBlacklisted(Class<?> c) {
++                return "com.google.common.collect.ImmutableSortedMultiset".equals(c.getName());
++            }
++
++            @Override
++            public boolean isBlacklisted(String name) {
++                return "com.google.common.collect.ImmutableSortedMultiset".equals(name);
++            }
++        });
++        try {
++            XStream2.SUPPRESS_TYPE_PERMISSION = true;
++            XStream2 xs = new XStream2();
++            xs.alias("hold", HoldRT.class);
++            CriticalXStreamException ex = assertThrows(CriticalXStreamException.class, () ->
++                    xs.fromXML("<hold><nested resolves-to=\"com.google.common.collect.ImmutableSortedMultiset\"/></hold>"));
++            assertThat(ex.getMessage(), containsString("Refusing to instantiate resolves-to type 'com.google.common.collect.ImmutableSortedMultiset'"));
++        } finally {
++            XStream2.SUPPRESS_TYPE_PERMISSION = saved;
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void resolvesToAllowedTypeIsAcceptedWhenTypePermissionSuppressed() {
++        boolean saved = XStream2.SUPPRESS_TYPE_PERMISSION;
++        ClassFilter.setDefault(ClassFilter.NONE);
++        try {
++            XStream2.SUPPRESS_TYPE_PERMISSION = true;
++            XStream2 xs = new XStream2();
++            xs.alias("hold", HoldRT.class);
++            HoldRT hold = (HoldRT) xs.fromXML(
++                    "<hold><nested resolves-to=\"" + RTProxy.class.getName() + "\"/></hold>");
++            assertThat(hold.nested, instanceOf(HoldRT.class));
++        } finally {
++            XStream2.SUPPRESS_TYPE_PERMISSION = saved;
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    public static class HoldRT {
++        HoldRT nested;
++    }
++
++    public static class RTProxy {
++        private Object readResolve() {
++            return new HoldRT();
++        }
++    }
++
++    /**
++     * A ClassFilter that rejects XStream internal types by package prefix, simulating the
++     * production ClassFilterImpl behaviour (XStream's JAR lacks Jenkins-ClassFilter-Whitelisted).
++     */
++    private static ClassFilter rejectXStreamInternals() {
++        return new ClassFilter() {
++            @Override
++            public boolean isBlacklisted(Class<?> c) {
++                return c.getName().startsWith("com.thoughtworks.xstream.");
++            }
++
++            @Override
++            public boolean isBlacklisted(String name) {
++                return name.startsWith("com.thoughtworks.xstream.");
++            }
++        };
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void mapWithNullValueRoundTripsWithStrictClassFilter() {
++        // Mapper.Null is XStream's internal null-sentinel resolved during map deserialisation.
++        // A strict ClassFilter (like the production ClassFilterImpl) would otherwise reject it.
++        ClassFilter.setDefault(rejectXStreamInternals());
++        try {
++            XStream2 xs = new XStream2();
++            xs.alias("holder", HoldList.class);
++
++            HoldList original = new HoldList();
++            original.items = new ArrayList<>();
++            original.items.add(null);
++            original.items.add(null);
++            original.items.add(null);
++
++            String xml = xs.toXML(original);
++            HoldList restored = (HoldList) xs.fromXML(xml);
++            assertThat(restored.items, hasSize(3));
++            assertThat(restored.items, contains(null, null, null));
++        } finally {
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void listWithNullValueRoundTripsWithStrictClassFilter() {
++        ClassFilter.setDefault(rejectXStreamInternals());
++        try {
++            XStream2 xs = new XStream2();
++            xs.alias("holder", HoldMap.class);
++
++            HoldMap original = new HoldMap();
++            original.items = new HashMap<>();
++            original.items.put("present", "value");
++            original.items.put("absent", null);
++
++            String xml = xs.toXML(original);
++            HoldMap restored = (HoldMap) xs.fromXML(xml);
++            assertThat(restored.items.get("present"), equalTo("value"));
++            assertTrue(restored.items.containsKey("absent"));
++            assertTrue(restored.items.get("absent") == null);
++        } finally {
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    @Test
++    @Issue("SECURITY-4125")
++    void treeMapWithNaturalOrderingRoundTripsWithStrictClassFilter() {
++        // TreeMapConverter$NullComparator (extends Mapper.Null) is XStream's sentinel for a
++        // TreeMap whose comparator is null (natural ordering).  A strict ClassFilter would
++        // otherwise reject it during deserialisation.
++        ClassFilter.setDefault(rejectXStreamInternals());
++        try {
++            XStream2 xs = new XStream2();
++            xs.alias("holder", HoldTreeMap.class);
++
++            HoldTreeMap original = new HoldTreeMap();
++            original.items = new TreeMap<>();
++            original.items.put("a", "1");
++            original.items.put("b", "2");
++
++            String xml = xs.toXML(original);
++            HoldTreeMap restored = (HoldTreeMap) xs.fromXML(xml);
++            assertThat(restored.items.get("a"), equalTo("1"));
++            assertThat(restored.items.get("b"), equalTo("2"));
++        } finally {
++            ClassFilter.setDefault(ClassFilter.STANDARD);
++        }
++    }
++
++    public static class HoldMap {
++        Map<String, String> items;
++    }
++
++    public static class HoldTreeMap {
++        TreeMap<String, String> items;
++    }
++
++    public static class HoldList {
++        List<String> items;
++    }
++}
+diff --git a/test/src/test/java/jenkins/security/Security4125Test.java b/test/src/test/java/jenkins/security/Security4125Test.java
+new file mode 100644
+index 0000000000..9cd5016098
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security4125Test.java
+@@ -0,0 +1,177 @@
++/*
++ * The MIT License
++ *
++ * Copyright 2026 CloudBees, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++package jenkins.security;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.not;
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import com.thoughtworks.xstream.security.ForbiddenClassException;
++import hudson.util.XStream2;
++import java.io.File;
++import java.net.HttpURLConnection;
++import java.net.URI;
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import jenkins.model.Jenkins;
++import jenkins.util.xstream.CriticalXStreamException;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.Page;
++import org.htmlunit.WebRequest;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++@Issue("SECURITY-4125")
++class Security4125Test {
++
++    public static class Holder {
++        Holder owner;
++    }
++
++    public static class ConfigHolder {
++        List<String> items = new ArrayList<>();
++        Map<String, String> settings = new HashMap<>();
++        String name;
++        int count;
++    }
++
++    @Test
++    void resolvesToBlacklistedTypeIsRejectedWithRealClassFilter(JenkinsRule j) {
++        XStream2 xs = new XStream2();
++        xs.alias("hold", Holder.class);
++
++        CriticalXStreamException ex = assertThrows(CriticalXStreamException.class, () ->
++                xs.fromXML("<hold>"
++                        + "<owner resolves-to=\"com.google.common.collect.ImmutableSortedMultiset$SerializedForm\"/>"
++                        + "</hold>"));
++        assertThat(ex.getMessage(), containsString("cause-exception     : " + ForbiddenClassException.class.getName()));
++    }
++
++    @Test
++    void jreInterfaceTypeDoesNotCauseCriticalExceptionFromTypePermission(JenkinsRule j) {
++        XStream2 xs = new XStream2();
++        xs.alias("hold", Holder.class);
++
++        assertDoesNotThrow(() -> xs.fromXML("<hold><owner class=\"java.util.Comparator\"/></hold>"));
++    }
++
++    @Test
++    void whitelistedJreTypesRoundTripWithRealClassFilter(JenkinsRule j) {
++        XStream2 xs = new XStream2();
++        xs.alias("config", ConfigHolder.class);
++
++        ConfigHolder original = new ConfigHolder();
++        original.items.add("alpha");
++        original.items.add("beta");
++        original.settings.put("key", "value");
++        original.name = "test";
++        original.count = 7;
++
++        String xml = xs.toXML(original);
++        ConfigHolder restored = assertDoesNotThrow(() -> (ConfigHolder) xs.fromXML(xml));
++
++        assertThat(restored.name, is("test"));
++        assertThat(restored.count, is(7));
++        assertThat(restored.items.size(), is(2));
++        assertThat(restored.items.get(0), is("alpha"));
++        assertThat(restored.settings.get("key"), is("value"));
++    }
++
++    @Test
++    void resolvesToBlacklistedTypeIsStillRejectedWhenTypePermissionSuppressed(JenkinsRule j) {
++        boolean saved = XStream2.SUPPRESS_TYPE_PERMISSION;
++        try {
++            XStream2.SUPPRESS_TYPE_PERMISSION = true;
++            XStream2 xs = new XStream2(); // picks up SUPPRESS_TYPE_PERMISSION at construction time
++            xs.alias("hold", Holder.class);
++
++            CriticalXStreamException ex = assertThrows(CriticalXStreamException.class, () ->
++                    xs.fromXML("<hold>"
++                            + "<owner resolves-to=\"com.google.common.collect.ImmutableSortedMultiset$SerializedForm\"/>"
++                            + "</hold>"));
++            assertThat(ex.getMessage(),
++                    containsString("Refusing to instantiate resolves-to type "
++                            + "'com.google.common.collect.ImmutableSortedMultiset$SerializedForm'"));
++            assertThat(ex.getMessage(), not(containsString(ForbiddenClassException.class.getName())));
++        } finally {
++            XStream2.SUPPRESS_TYPE_PERMISSION = saved;
++        }
++    }
++
++    @Test
++    void exploitPayloadIsRejectedAtSelfMyViewsEndpoint(JenkinsRule j, @TempDir File tempDir) throws Exception {
++        // TODO Keep in or remove?
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy().grant(Jenkins.READ).everywhere().to("attacker"));
++
++        File marker = new File(tempDir, "rce-marker");
++        assertFalse(marker.exists(), "pre-condition: marker must not exist");
++
++        // Exploit XML from the original report, adapted to write to the test temp dir.
++        String exploitXml = "<view>\n"
++                + "  <owner resolves-to=\"com.google.common.collect.ImmutableSortedMultiset$SerializedForm\">\n"
++                + "    <object resolves-to=\"org.apache.commons.collections.comparators.ComparableComparator\"/>\n"
++                + "    <object resolves-to=\"org.apache.commons.collections.functors.InvokerTransformer\">\n"
++                + "      <iMethodName>exec</iMethodName>\n"
++                + "      <iParamTypes><java-class>java.lang.String</java-class></iParamTypes>\n"
++                + "      <iArgs><string>/usr/bin/touch " + marker.getAbsolutePath() + "</string></iArgs>\n"
++                + "    </object>\n"
++                + "    <object resolves-to=\"org.apache.commons.collections.comparators.TransformingComparator\">\n"
++                + "      <decorated reference=\"../../object[1]\"/>\n"
++                + "      <transformer reference=\"../../object[2]\"/>\n"
++                + "    </object>\n"
++                + "    <object resolves-to=\"java.lang.Runtime\"/>\n"
++                + "    <comparator reference=\"../object[3]\"/>\n"
++                + "    <elements><object reference=\"../../object[4]\"/></elements>\n"
++                + "    <counts><int>1</int></counts>\n"
++                + "  </owner>\n"
++                + "</view>";
++
++        try (JenkinsRule.WebClient wc = j.createWebClient().withBasicApiToken("attacker").withThrowExceptionOnFailingStatusCode(false)) {
++
++            WebRequest req = new WebRequest(URI.create(wc.getContextPath() + "user/attacker/my-views/createView?name=exploittest").toURL(), HttpMethod.POST);
++            req.setAdditionalHeader("Content-Type", "application/xml");
++            req.setRequestBody(exploitXml);
++
++            Page response = wc.getPage(req);
++
++            // CriticalXStreamException must propagate to HTTP 500; the view must not be created.
++            assertThat(response.getWebResponse().getStatusCode(), is(HttpURLConnection.HTTP_INTERNAL_ERROR));
++        }
++
++        assertFalse(marker.exists(), "exploit must not have created the marker file");
++    }
++}
+-- 
+2.43.0
+

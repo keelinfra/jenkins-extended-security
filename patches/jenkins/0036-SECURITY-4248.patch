@@ -1,0 +1,459 @@
+From a52ef74c49108c4431b15c3b6f3c2007b2d2f1fe Mon Sep 17 00:00:00 2001
+From: gbhat618 <gbhat@cloudbees.com>
+Date: Wed, 21 Oct 2026 12:14:48 +0000
+Subject: [PATCH 36/49] [SECURITY-4248]
+
+(cherry picked from commit e0e2fd474f7bd80ada8d6728387d83844b6f42f8)
+---
+ core/src/main/java/hudson/FilePath.java       |  64 ++++++++--
+ core/src/main/java/hudson/Util.java           |  33 ++++++
+ core/src/spotbugs/excludesFilter.xml          |   1 +
+ core/src/test/java/hudson/FilePathTest.java   |  25 ++++
+ core/src/test/java/hudson/UtilTest.java       |  54 +++++++++
+ .../jenkins/security/Security3657Test.java    |   4 +-
+ .../test/java/hudson/Security4248Test.java    | 111 ++++++++++++++++++
+ .../jenkins/security/Security3657Test.java    |   4 +-
+ 8 files changed, 284 insertions(+), 12 deletions(-)
+ create mode 100644 test/src/test/java/hudson/Security4248Test.java
+
+diff --git a/core/src/main/java/hudson/FilePath.java b/core/src/main/java/hudson/FilePath.java
+index ead21f429b..045c8aa0ae 100644
+--- a/core/src/main/java/hudson/FilePath.java
++++ b/core/src/main/java/hudson/FilePath.java
+@@ -803,6 +803,9 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+ 
+     /**
+      * Creates a symlink to the specified target.
++     * <p>
++     * This method swallows symlink creation failures. Prefer
++     * {@link #symlinkToStrict(String, TaskListener)} for new call sites.
+      *
+      * @param target
+      *      The file that the symlink should point to.
+@@ -814,6 +817,28 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+         act(new SymlinkTo(target, listener));
+     }
+ 
++    private void symlinkToStrict(final String target, final TaskListener listener) throws IOException, InterruptedException {
++        act(new SymlinkToStrict(target, listener));
++    }
++
++    private static class SymlinkToStrict extends MasterToSlaveFileCallable<Void> {
++        private final String target;
++        private final TaskListener listener;
++
++        SymlinkToStrict(String target, TaskListener listener) {
++            this.target = target;
++            this.listener = listener;
++        }
++
++        private static final long serialVersionUID = 1L;
++
++        @Override
++        public Void invoke(File f, VirtualChannel channel) throws IOException {
++            Util.createSymlinkStrict(f.getParentFile(), target, f.getName(), listener);
++            return null;
++        }
++    }
++
+     private static class SymlinkTo extends MasterToSlaveFileCallable<Void> {
+         private final String target;
+         private final TaskListener listener;
+@@ -3073,6 +3098,30 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+         return !trueIfPermissiveFlag;
+     }
+ 
++    @VisibleForTesting
++    interface TarEntryHook {
++        void accept(File target) throws IOException;
++    }
++
++    /**
++     * Test hook invoked after the initial ancestor symlink check.
++     * Tests replace it to simulate race condition; defaults to a no-op.
++     */
++    @Restricted(NoExternalUse.class)
++    @VisibleForTesting
++    static TarEntryHook afterInitialAncestorCheck = target -> {};
++
++    @VisibleForTesting
++    static void requireNoSymlinkInAncestors(File parent, File absoluteBaseDir, String name, String entryName, String origin) throws IOException {
++        File current = parent;
++        while (current != null && !current.equals(absoluteBaseDir)) {
++            if (Util.isSymlink(current)) {
++                throw new IOException("Tar " + name + " attempts to write to file with symlink in path (" + origin + "): " + entryName);
++            }
++            current = current.getParentFile();
++        }
++    }
++
+     /**
+      * Reads from a tar stream and stores obtained files to the base dir.
+      * Supports large files &gt; 10 GB since 1.627.
+@@ -3110,14 +3159,9 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+ 
+                 if (requireReadFromTarPathTraversalValidation(ALLOW_UNTAR_SYMLINK_RESOLUTION)) {
+                     // getCanonicalFile doesn't follow symlinks on Windows, so do this the hard way: Check each ancestor up to the base dir for whether it's a symlink
+-                    File current = parent;
+-                    while (current != null && !current.equals(absoluteBaseDir)) {
+-                        if (Util.isSymlink(current)) {
+-                            throw new IOException("Tar " + name + " attempts to write to file with symlink in path: " + entryName);
+-                        }
+-                        current = current.getParentFile();
+-                    }
++                    requireNoSymlinkInAncestors(parent, absoluteBaseDir, name, entryName, "during initial ancestor check");
+                 }
++                afterInitialAncestorCheck.accept(f);
+ 
+                 if (te.isDirectory()) {
+                     mkdirs(f);
+@@ -3125,13 +3169,17 @@ public final class FilePath implements SerializableOnlyOverRemoting {
+                     if (parent != null) mkdirs(parent);
+ 
+                     if (te.isSymbolicLink()) {
+-                        new FilePath(f).symlinkTo(te.getLinkName(), TaskListener.NULL);
++                        new FilePath(f).symlinkToStrict(te.getLinkName(), TaskListener.NULL);
+                     } else {
+                         if (requireReadFromTarPathTraversalValidation(ALLOW_UNTAR_SYMLINK_RESOLUTION)) {
+                             if (Util.isSymlink(f)) {
+                                 throw new IOException("Tar '" + name + "' entry '" + entryName + "' would write through existing symlink: " + f);
+                             }
+                         }
++                        if (requireReadFromTarPathTraversalValidation(ALLOW_UNTAR_SYMLINK_RESOLUTION)) {
++                            requireNoSymlinkInAncestors(parent, absoluteBaseDir, name, entryName, "during write");
++                        }
++
+                         IOUtils.copy(t, f);
+ 
+                         Files.setLastModifiedTime(Util.fileToPath(f), FileTime.from(te.getModTime().toInstant()));
+diff --git a/core/src/main/java/hudson/Util.java b/core/src/main/java/hudson/Util.java
+index b54d378887..4d00756841 100644
+--- a/core/src/main/java/hudson/Util.java
++++ b/core/src/main/java/hudson/Util.java
+@@ -1333,10 +1333,43 @@ public class Util {
+         return false;
+     }
+ 
++    /**
++     * Creates a symlink to targetPath at baseDir+symlinkPath; throws {@link IOException} on failure.
++     * No-op if an identical symlink already exists.
++     * <p>
++     *
++     * @param baseDir
++     *      Base directory to resolve the 'symlinkPath' parameter.
++     * @param targetPath
++     *      The file that the symlink should point to. Usually relative to the directory of the symlink but may instead be an absolute path.
++     * @param symlinkPath
++     *      Where to create a symlink in (relative to {@code baseDir})
++     */
++    @Restricted(NoExternalUse.class)
++    static void createSymlinkStrict(@NonNull File baseDir, @NonNull String targetPath,
++            @NonNull String symlinkPath, @NonNull TaskListener listener) throws IOException {
++        File fileForSymlink = new File(baseDir, symlinkPath);
++        Path pathForSymlink = fileToPath(fileForSymlink);
++        Path target = Paths.get(targetPath, MemoryReductionUtil.EMPTY_STRING_ARRAY);
++
++        if (Files.isSymbolicLink(pathForSymlink) && Files.readSymbolicLink(pathForSymlink).equals(target)) {
++            return;
++        }
++
++        try {
++            Files.createSymbolicLink(pathForSymlink, target);
++        } catch (IOException e) {
++            listener.error("Failed to create symlink " + pathForSymlink + " -> " + target);
++            throw e;
++        }
++    }
++
+     /**
+      * Creates a symlink to targetPath at baseDir+symlinkPath.
+      * <p>
+      * If there's a prior symlink at baseDir+symlinkPath, it will be overwritten.
++     * <p>
++     * Prefer {@link #createSymlinkStrict(File, String, String, TaskListener)} for new call sites.
+      *
+      * @param baseDir
+      *      Base directory to resolve the 'symlinkPath' parameter.
+diff --git a/core/src/spotbugs/excludesFilter.xml b/core/src/spotbugs/excludesFilter.xml
+index 6f3f03e9fa..49d70711e9 100644
+--- a/core/src/spotbugs/excludesFilter.xml
++++ b/core/src/spotbugs/excludesFilter.xml
+@@ -139,6 +139,7 @@
+           <Class name="hudson.FilePath$MoveAllChildrenTo"/>
+           <Class name="hudson.FilePath$RenameTo"/>
+           <Class name="hudson.FilePath$SymlinkTo"/>
++          <Class name="hudson.FilePath$SymlinkToStrict"/>
+           <Class name="hudson.FilePath$UnzipLocal"/>
+           <Class name="hudson.init.InitStrategy"/>
+           <Class name="hudson.Launcher$LocalLauncher"/>
+diff --git a/core/src/test/java/hudson/FilePathTest.java b/core/src/test/java/hudson/FilePathTest.java
+index 24ffe9b212..b0ffb1ea76 100644
+--- a/core/src/test/java/hudson/FilePathTest.java
++++ b/core/src/test/java/hudson/FilePathTest.java
+@@ -25,7 +25,10 @@
+ package hudson;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.allOf;
++import static org.hamcrest.Matchers.containsString;
+ import static org.hamcrest.Matchers.is;
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertNotNull;
+@@ -1297,4 +1300,26 @@ class FilePathTest {
+         }
+         return result;
+     }
++
++    @Test
++    void ancestorSymlinkCheck() throws Exception {
++        assumeFalse(Functions.isWindows());
++        File base = new File(temp, "base").getAbsoluteFile();
++        File outside = new File(temp, "outside").getAbsoluteFile();
++        assertTrue(base.mkdirs());
++        assertTrue(outside.mkdirs());
++        File parent = new File(base, "subdir");
++        assertTrue(parent.mkdirs());
++        assertDoesNotThrow(() -> FilePath.requireNoSymlinkInAncestors(parent, base, "crafted.tar", "subdir/file1.txt", "during write"));
++
++        Files.delete(parent.toPath());
++        Files.createSymbolicLink(parent.toPath(), outside.toPath());
++        IOException e = assertThrows(IOException.class,
++                () -> FilePath.requireNoSymlinkInAncestors(parent, base, "crafted.tar", "subdir/file1.txt", "during write"));
++        assertThat(e.getMessage(), allOf(
++                containsString("Tar crafted.tar"),
++                containsString("attempts to write to file with symlink in path"),
++                containsString("(during write)"),
++                containsString("subdir/file1.txt")));
++    }
+ }
+diff --git a/core/src/test/java/hudson/UtilTest.java b/core/src/test/java/hudson/UtilTest.java
+index 122566f2f5..1512ec53f9 100644
+--- a/core/src/test/java/hudson/UtilTest.java
++++ b/core/src/test/java/hudson/UtilTest.java
+@@ -305,6 +305,60 @@ class UtilTest {
+         }
+     }
+ 
++    @Test
++    @Issue("SECURITY-4248")
++    void createSymlinkStrictRefusesToReplaceExistingDirectory() throws Exception {
++        assumeFalse(Functions.isWindows());
++        var d = tmp;
++        var subdir = new File(d, "subdir");
++        assertTrue(subdir.mkdir());
++
++        assertThrows(IOException.class, () -> Util.createSymlinkStrict(d, "/tmp/evil", "subdir", TaskListener.NULL));
++
++        assertFalse(Util.isSymlink(subdir));
++        assertTrue(subdir.isDirectory());
++    }
++
++    @Test
++    @Issue("SECURITY-4248")
++    void createSymlinkStrictRefusesToReplaceExistingFile() throws Exception {
++        assumeFalse(Functions.isWindows());
++        var d = tmp;
++        var file = new File(d, "existing");
++        Files.writeString(file.toPath(), "original");
++
++        assertThrows(IOException.class, () -> Util.createSymlinkStrict(d, "/tmp/evil", "existing", TaskListener.NULL));
++
++        assertFalse(Util.isSymlink(file));
++        assertEquals("original", Files.readString(file.toPath()));
++    }
++
++    @Test
++    @Issue("SECURITY-4248")
++    void createSymlinkStrictSkipsIdenticalSymlink() throws Exception {
++        assumeFalse(Functions.isWindows());
++        var d = tmp;
++        Util.createSymlinkStrict(d, "target", "link", TaskListener.NULL);
++        assertEquals("target", Util.resolveSymlink(new File(d, "link")));
++
++        Util.createSymlinkStrict(d, "target", "link", TaskListener.NULL);
++
++        assertEquals("target", Util.resolveSymlink(new File(d, "link")));
++    }
++
++    @Test
++    @Issue("SECURITY-4248")
++    void createSymlinkStrictRefusesToReplaceDifferentSymlink() throws Exception {
++        assumeFalse(Functions.isWindows());
++        var d = tmp;
++        Util.createSymlinkStrict(d, "old-target", "link", TaskListener.NULL);
++        assertEquals("old-target", Util.resolveSymlink(new File(d, "link")));
++
++        assertThrows(IOException.class, () -> Util.createSymlinkStrict(d, "new-target", "link", TaskListener.NULL));
++
++        assertEquals("old-target", Util.resolveSymlink(new File(d, "link")));
++    }
++
+     @Test
+     void testIsSymlink_onWindows_junction() throws Exception {
+         assumeTrue(Functions.isWindows(), "Uses Windows-specific features");
+diff --git a/core/src/test/java/jenkins/security/Security3657Test.java b/core/src/test/java/jenkins/security/Security3657Test.java
+index c487772731..4aabd7658e 100644
+--- a/core/src/test/java/jenkins/security/Security3657Test.java
++++ b/core/src/test/java/jenkins/security/Security3657Test.java
+@@ -217,7 +217,7 @@ public class Security3657Test {
+         extractFilePath.mkdirs();
+         final IOException ioException = assertThrows(IOException.class, () -> symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE));
+         assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
+-        assertThat(ioException.getCause().getMessage(), containsString("Tar crafted.tar attempts to write to file with symlink in path: link-file/bar/"));
++        assertThat(ioException.getCause().getMessage(), containsString("Tar crafted.tar attempts to write to file with symlink in path (during initial ancestor check): link-file/bar/"));
+         assertFalse(Files.isDirectory(root.toPath().resolve("bar")));
+     }
+ 
+@@ -295,7 +295,7 @@ public class Security3657Test {
+         extractFilePath.mkdirs();
+         final IOException ioException = assertThrows(IOException.class, () -> symlinkTarFile.untar(extractFilePath, FilePath.TarCompression.NONE));
+         assertThat(ioException.getMessage(), containsString("Failed to extract crafted.tar"));
+-        assertThat(ioException.getCause().getMessage(), containsString("Tar crafted.tar attempts to write to file with symlink in path: link-file/bar/"));
++        assertThat(ioException.getCause().getMessage(), containsString("Tar crafted.tar attempts to write to file with symlink in path (during initial ancestor check): link-file/bar/"));
+         assertFalse(Files.isDirectory(relativeRoot.toPath().resolve("bar")));
+     }
+ 
+diff --git a/test/src/test/java/hudson/Security4248Test.java b/test/src/test/java/hudson/Security4248Test.java
+new file mode 100644
+index 0000000000..dc2cd7a299
+--- /dev/null
++++ b/test/src/test/java/hudson/Security4248Test.java
+@@ -0,0 +1,111 @@
++package hudson;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.allOf;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.hamcrest.Matchers.is;
++import static org.junit.jupiter.api.Assertions.assertAll;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assumptions.assumeFalse;
++
++import java.io.File;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.FileAlreadyExistsException;
++import java.nio.file.Files;
++import java.nio.file.LinkOption;
++import org.apache.tools.tar.TarConstants;
++import org.apache.tools.tar.TarEntry;
++import org.apache.tools.tar.TarOutputStream;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++// thread-1 writes to <base>/subdir/file1.txt, thread-2 swaps subdir for a symlink to <outside>
++@Issue("SECURITY-4248")
++@WithJenkins
++class Security4248Test {
++
++    private File base;
++    private File outside;
++    private File tar;
++
++    @BeforeEach
++    void setUp(JenkinsRule r) {
++        assumeFalse(Functions.isWindows());
++        var home = r.jenkins.getRootDir();
++        base = new File(home, "base").getAbsoluteFile();
++        outside = new File(home, "outside").getAbsoluteFile();
++        tar = new File(home, "crafted.tar");
++        assertThat(base.mkdirs(), is(true));
++        assertThat(outside.mkdirs(), is(true));
++    }
++
++    @AfterEach
++    void tearDown() {
++        FilePath.afterInitialAncestorCheck = target -> {};
++    }
++
++    @Test
++    void symlinkSwappedInAfterInitialAncestorCheckIsRejected() throws Exception {
++        try (var out = new TarOutputStream(Files.newOutputStream(tar.toPath()))) {
++            var content = "data".getBytes(StandardCharsets.UTF_8);
++            var file = new TarEntry("subdir/file1.txt", true);
++            file.setSize(content.length);
++            out.putNextEntry(file);
++            out.write(content);
++            out.closeEntry();
++        }
++
++        // thread-2: swaps subdir for a symlink while thread-1 is between its ancestor check and its write
++        FilePath.afterInitialAncestorCheck = target -> {
++            if (target.getName().equals("file1.txt")) {
++                Files.createSymbolicLink(new File(base, "subdir").toPath(), outside.toPath());
++            }
++        };
++
++        // thread-1: extracts subdir/file1.txt
++        assertAll(
++                () -> {
++                    var e = assertThrows(IOException.class, this::untar);
++                    assertThat(e.getCause().getMessage(), allOf(
++                            containsString("Tar crafted.tar"),
++                            containsString("attempts to write to file with symlink in path"),
++                            containsString("(during write)"),
++                            containsString("subdir/file1.txt")));
++                },
++                () -> assertThat("file1.txt must not be written through the symlink",
++                        new File(outside, "file1.txt").exists(), is(false)));
++    }
++
++    @Test
++    void symlinkEntryCannotReplaceExtractedDirectory() throws Exception {
++        try (var out = new TarOutputStream(Files.newOutputStream(tar.toPath()))) {
++            // the subdir/ entry comes first in the same tar; in the real exploit thread-1's mkdirs creates subdir
++            out.putNextEntry(new TarEntry("subdir/", true));
++            out.closeEntry();
++            // thread-2: tries to replace subdir with a symlink to outside
++            var link = new TarEntry("subdir", true);
++            link.setLinkFlag(TarConstants.LF_SYMLINK);
++            link.setLinkName("../outside");
++            out.putNextEntry(link);
++            out.closeEntry();
++        }
++
++        assertAll(
++                () -> {
++                    var e = assertThrows(IOException.class, this::untar);
++                    assertThat(e.getCause(), instanceOf(FileAlreadyExistsException.class));
++                },
++                () -> assertThat("subdir must stay a real directory",
++                        Files.isDirectory(new File(base, "subdir").toPath(), LinkOption.NOFOLLOW_LINKS), is(true)));
++    }
++
++    private void untar() throws IOException, InterruptedException {
++        new FilePath(tar).untar(new FilePath(base), FilePath.TarCompression.NONE);
++    }
++}
+diff --git a/test/src/test/java/jenkins/security/Security3657Test.java b/test/src/test/java/jenkins/security/Security3657Test.java
+index d264e89868..535fd29ea3 100644
+--- a/test/src/test/java/jenkins/security/Security3657Test.java
++++ b/test/src/test/java/jenkins/security/Security3657Test.java
+@@ -52,7 +52,7 @@ public class Security3657Test {
+         final UntarCallable callable = new UntarCallable(node.getRootDir());
+         final IOException ioException = assertThrows(IOException.class, () -> node.getChannel().call(callable));
+         assertThat(ioException.getMessage(), is("Failed to extract file.tar"));
+-        assertThat(ioException.getCause().getMessage(), is("Tar file.tar attempts to write to file with symlink in path: foo/bar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar file.tar attempts to write to file with symlink in path (during initial ancestor check): foo/bar"));
+     }
+ 
+     @Test
+@@ -63,7 +63,7 @@ public class Security3657Test {
+         final UntarCallable callable = new UntarCallable(node.getRootDir());
+         final IOException ioException = assertThrows(IOException.class, () -> node.getChannel().call(callable));
+         assertThat(ioException.getMessage(), is("Failed to extract file.tar"));
+-        assertThat(ioException.getCause().getMessage(), is("Tar file.tar attempts to write to file with symlink in path: foo/bar"));
++        assertThat(ioException.getCause().getMessage(), is("Tar file.tar attempts to write to file with symlink in path (during initial ancestor check): foo/bar"));
+     }
+ 
+     @Test
+-- 
+2.43.0
+

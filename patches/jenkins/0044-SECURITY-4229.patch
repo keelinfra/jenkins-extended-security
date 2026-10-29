@@ -1,0 +1,94 @@
+From 149317622d057be162481fa398179dd5d1e96987 Mon Sep 17 00:00:00 2001
+From: gbhat618 <gbhat@cloudbees.com>
+Date: Wed, 21 Oct 2026 12:15:09 +0000
+Subject: [PATCH 44/49] [SECURITY-4229]
+
+Conflict resolved for 2.541.x: its dropdown item template is older, so the
+same change (tooltip instead of data-html-tooltip) is made in that template.
+
+(cherry picked from commit 7ed966a1d7bfdaed73e92ee3b7e1da00b2feb6cc)
+---
+ src/main/js/components/dropdowns/templates.js |  2 +-
+ .../jenkins/security/Security4229Test.java    | 57 +++++++++++++++++++
+ 2 files changed, 58 insertions(+), 1 deletion(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security4229Test.java
+
+diff --git a/src/main/js/components/dropdowns/templates.js b/src/main/js/components/dropdowns/templates.js
+index 13694535b9..7d05be71e4 100644
+--- a/src/main/js/components/dropdowns/templates.js
++++ b/src/main/js/components/dropdowns/templates.js
+@@ -82,7 +82,7 @@ function menuItem(options) {
+   const item = createElementFromHtml(`
+       <${tag} class="jenkins-dropdown__item ${itemOptions.clazz ? xmlEscape(itemOptions.clazz) : ""}"
+         ${itemOptions.url ? `href="${xmlEscape(itemOptions.url)}"` : ""} ${itemOptions.id ? `id="${xmlEscape(itemOptions.id)}"` : ""}
+-        ${itemOptions.tooltip ? `data-html-tooltip="${xmlEscape(itemOptions.tooltip)}"` : ""}>
++        ${itemOptions.tooltip ? `tooltip="${xmlEscape(itemOptions.tooltip)}"` : ""}>
+           ${
+             itemOptions.icon
+               ? `<div class="jenkins-dropdown__item__icon">${
+diff --git a/test/src/test/java/jenkins/security/Security4229Test.java b/test/src/test/java/jenkins/security/Security4229Test.java
+new file mode 100644
+index 0000000000..005579d541
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security4229Test.java
+@@ -0,0 +1,57 @@
++package jenkins.security;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++
++import hudson.model.User;
++import java.util.concurrent.atomic.AtomicBoolean;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@Issue("SECURITY-4229")
++@WithJenkins
++class Security4229Test {
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    @Test
++    void breadcrumbOverflowTooltipHasNoXss() throws Exception {
++        var reader = User.get("reader", true);
++        reader.setFullName("Reader McReaderson, Platform Engineering <img src=x id=pwned "
++                + "onerror=\"alert('PWNED-BY-READER')\">"
++                + "<details open ontoggle=\"alert('PWNED-BY-READER')\"></details>");
++        reader.save();
++
++        var alertTriggered = new AtomicBoolean(false);
++        try (var wc = j.createWebClient()) {
++            wc.setAlertHandler((page, message) -> alertTriggered.set(true));
++            var page = wc.goTo("user/" + reader.getId() + "/");
++
++            // Simulate a window resize causing the breadcrumb bar to overflow in HtmlUnit.
++            page.executeJavaScript(
++                    "var bar = document.getElementById('breadcrumbBar');"
++                            + "Object.defineProperty(bar, 'scrollWidth', { value: 1000, configurable: true });"
++                            + "Object.defineProperty(bar, 'offsetWidth', { value: 500, configurable: true });"
++                            + "Object.defineProperty(window, 'innerWidth', { value: 500, configurable: true });"
++                            + "window.dispatchEvent(new Event('resize'));");
++            // Wait for overflow menu generation triggered by resize listener.
++            wc.waitForBackgroundJavaScript(2000L);
++
++            // Simulate hovering to display the tooltip since Tippy renders tooltip content lazily.
++            page.executeJavaScript(
++                    "document.querySelector('.jenkins-breadcrumbs__list-item .jenkins-button')"
++                            + "._tippy.popper.querySelector('.jenkins-dropdown__item')._tippy.show();");
++            // Wait for lazy tooltip DOM rendering and script execution.
++            wc.waitForBackgroundJavaScript(2000L);
++
++            assertFalse(alertTriggered.get(), "No alert popup expected");
++        }
++    }
++}
+-- 
+2.43.0
+

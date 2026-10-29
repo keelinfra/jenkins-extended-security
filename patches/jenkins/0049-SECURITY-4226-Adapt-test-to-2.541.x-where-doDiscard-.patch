@@ -1,0 +1,28 @@
+From 8c02247911a9eb73ec72cb634ff9f228c15c69ed Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 05:31:01 +0000
+Subject: [PATCH 49/49] [SECURITY-4226] Adapt test to 2.541.x, where doDiscard
+ takes request and response
+
+Adaptation, not an upstream commit. OldDataMonitor.doDiscard on 2.541.x takes
+(StaplerRequest2, StaplerResponse2) and ignores both, so the test passes null.
+---
+ test/src/test/java/jenkins/security/Security4226Test.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/src/test/java/jenkins/security/Security4226Test.java b/test/src/test/java/jenkins/security/Security4226Test.java
+index c3a9234cdc..18f0b49255 100644
+--- a/test/src/test/java/jenkins/security/Security4226Test.java
++++ b/test/src/test/java/jenkins/security/Security4226Test.java
+@@ -63,7 +63,7 @@ class Security4226Test {
+         OldDataMonitor.report(fakeSaveable, "1.106");
+ 
+         assertEquals(1, odm.getData().size(), "report(Saveable, String) must store data for SYSTEM user");
+-        odm.doDiscard();
++        odm.doDiscard(null, null);
+     }
+ 
+     @Test
+-- 
+2.43.0
+

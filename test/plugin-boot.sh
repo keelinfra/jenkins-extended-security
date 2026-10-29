@@ -34,7 +34,7 @@ if [ ! -f "$pim" ]; then
 fi
 echo "$PIM_SHA256  $pim" | sha256sum -c --quiet
 
-# 2. Resolve and download plugins for 2.541.3 (pinned, so the -k1 suffix can't change the result).
+# 2. Resolve and download plugins for 2.541.3 (pinned, so the -kN suffix can't change the result).
 # The update center mirrors sometimes drop connections, so retry. Plugins already in
 # $cache are kept, so a second run with the same PLUGIN_CACHE downloads nothing.
 cache=${PLUGIN_CACHE:-$work/plugin-download}

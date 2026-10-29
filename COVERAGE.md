@@ -45,6 +45,28 @@ Plugin issues are not covered. Install the fixed plugin versions; most of them s
 | SECURITY-4025 | CVE-2026-84651 | jenkins/0024 | fbc5ce3718 | |
 | SECURITY-4032 | CVE-2026-84650 | jenkins/0023, 0027 | c29adc6755 | 2.541 has no `Cause.causeBag` field, so that annotation is dropped. `DefaultCrumbIssuer.excludeClientIPFromCrumb` is not transient on 2.541 and stays as it is. |
 
+## 2026-10-28
+
+| Issue | CVE | Patch | Upstream commit | Notes |
+| --- | --- | --- | --- | --- |
+| SECURITY-4122 | CVE-2026-117618 | jenkins/0045 | 477e19b2ff | Conflict: `doCreateFirstAccount` is not `synchronized` on 2.541.x; only the setup wizard check is added. |
+| SECURITY-4123 | CVE-2026-117614 | jenkins/0033 | 76ad6bac19 | |
+| SECURITY-4125 | CVE-2026-117612 | jenkins/0040 | 58eca68b71 | |
+| SECURITY-4187 | CVE-2026-117615 | jenkins/0034 | c9c46ee9d7 | |
+| SECURITY-4188 | CVE-2026-117616 | jenkins/0035 | 1390a29f9d | |
+| SECURITY-4189 | CVE-2026-117619 | jenkins/0037 | 2b6428322e | |
+| SECURITY-4206 | CVE-2026-117625 | jenkins/0038 | a4f0fbb815 | |
+| SECURITY-4225 | CVE-2026-117613 | jenkins/0047, 0048 | fab7b78606, 392164f2d9 | 0047 is upstream #26918 (element checks in `PersistedList` and `CopyOnWriteList`), which the fix builds on. It was not a security fix by itself. |
+| SECURITY-4226 | CVE-2026-117620 | jenkins/0046, 0049 | c2cb64475a | Conflict: `OldDataMonitor.report` has no `Run` check on 2.541.x; only the new check is added. 0049 adapts the test to the 2.541.x `doDiscard` signature. |
+| SECURITY-4229 | CVE-2026-117623 | jenkins/0044 | 7ed966a1d7 | Conflict: 2.541.x has an older dropdown item template; the same change (`tooltip` instead of `data-html-tooltip`) is made there. |
+| SECURITY-4232 | CVE-2026-117621 | jenkins/0043 | 1e856ee10b | Conflict: `BuildChildPaths` stays a class as on 2.541.x, and `getFirst()` becomes `get(0)` for Java 17. |
+| SECURITY-4237 | CVE-2026-117626 | jenkins/0039 | 3e9af7eabc | |
+| SECURITY-4243 | CVE-2026-117624 | jenkins/0041, 0042 | 4a3fc8d3b3, d39763f40a | |
+| SECURITY-4248 | CVE-2026-117617 | jenkins/0036 | e0e2fd474f | |
+| SECURITY-4249 | CVE-2026-117622 | jenkins/0032 | eefe8c4148 | |
+
+Not included: the third-party updates in 2.580.2 (handlebars 4.7.10, Jetty 12.1.14 through Winstone). They are not in the advisory and have not been checked against 2.541.x yet.
+
 ## Patches that are not security fixes
 
 | Patch | Upstream | Why |

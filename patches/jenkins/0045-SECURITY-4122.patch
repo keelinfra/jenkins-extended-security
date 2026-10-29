@@ -1,0 +1,150 @@
+From 3f463b245b598bc47adff8256de15eea85e1b746 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 12:15:15 +0000
+Subject: [PATCH 45/49] [SECURITY-4122]
+
+Conflict resolved for 2.541.x: doCreateFirstAccount is not synchronized
+there, and only the setup wizard check is added.
+
+(cherry picked from commit 477e19b2ff795cf16228aa30bdce3a964c7cb8ed)
+---
+ .../security/HudsonPrivateSecurityRealm.java  |   5 +-
+ .../jenkins/security/Security4122Test.java    | 103 ++++++++++++++++++
+ 2 files changed, 106 insertions(+), 2 deletions(-)
+ create mode 100644 test/src/test/java/jenkins/security/Security4122Test.java
+
+diff --git a/core/src/main/java/hudson/security/HudsonPrivateSecurityRealm.java b/core/src/main/java/hudson/security/HudsonPrivateSecurityRealm.java
+index 2aa6e733bb..f0bf6f19bb 100644
+--- a/core/src/main/java/hudson/security/HudsonPrivateSecurityRealm.java
++++ b/core/src/main/java/hudson/security/HudsonPrivateSecurityRealm.java
+@@ -365,7 +365,7 @@ public class HudsonPrivateSecurityRealm extends AbstractPasswordBasedSecurityRea
+      */
+     @RequirePOST
+     public void doCreateFirstAccount(StaplerRequest2 req, StaplerResponse2 rsp) throws IOException, ServletException {
+-        if (hasSomeUser()) {
++        if (!Jenkins.get().getInstallState().isSetupComplete() || hasSomeUser()) {
+             rsp.sendError(SC_UNAUTHORIZED, "First user was already created");
+             return;
+         }
+@@ -1178,7 +1178,8 @@ public class HudsonPrivateSecurityRealm extends AbstractPasswordBasedSecurityRea
+ 
+         private boolean needsToCreateFirstUser() {
+             return !hasSomeUser()
+-                && Jenkins.get().getSecurityRealm() instanceof HudsonPrivateSecurityRealm;
++                    && Jenkins.get().getSecurityRealm() instanceof HudsonPrivateSecurityRealm
++                    && Jenkins.get().getInstallState().isSetupComplete();
+         }
+ 
+         @Override
+diff --git a/test/src/test/java/jenkins/security/Security4122Test.java b/test/src/test/java/jenkins/security/Security4122Test.java
+new file mode 100644
+index 0000000000..721bc1a120
+--- /dev/null
++++ b/test/src/test/java/jenkins/security/Security4122Test.java
+@@ -0,0 +1,103 @@
++package jenkins.security;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNull;
++
++import hudson.model.User;
++import hudson.security.HudsonPrivateSecurityRealm;
++import java.net.URI;
++import java.util.List;
++import jenkins.install.InstallState;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.Page;
++import org.htmlunit.WebRequest;
++import org.htmlunit.util.NameValuePair;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@Issue("SECURITY-4122")
++@WithJenkins
++class Security4122Test {
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    private Page postCreateFirstAccount(String username) throws Exception {
++        try (JenkinsRule.WebClient wc = j.createWebClient().withThrowExceptionOnFailingStatusCode(false)) {
++            WebRequest request = new WebRequest(
++                    new URI(wc.getContextPath() + "securityRealm/createFirstAccount").toURL(),
++                    HttpMethod.POST);
++            request.setRequestParameters(List.of(
++                    new NameValuePair("username", username),
++                    new NameValuePair("password1", "password"),
++                    new NameValuePair("password2", "password"),
++                    new NameValuePair("fullname", username),
++                    new NameValuePair("email", username + "@example.com")));
++            return wc.getPage(request);
++        }
++    }
++
++    @Test
++    void attackerIsBlockedWhenSetupWizardIsActive() throws Exception {
++        j.jenkins.setInstallState(InstallState.INITIAL_PLUGINS_INSTALLING);
++        j.jenkins.setSecurityRealm(new HudsonPrivateSecurityRealm(false, false, null));
++        j.jenkins.setCrumbIssuer(null);
++
++        Page response = postCreateFirstAccount("attacker");
++
++        assertEquals(401, response.getWebResponse().getStatusCode());
++        assertNull(User.getById("attacker", false));
++    }
++
++    @Test
++    void attackerIsBlockedWhenSetupWizardOpensZeroUserWindow() throws Exception {
++        HudsonPrivateSecurityRealm realm = new HudsonPrivateSecurityRealm(false, false, null);
++        j.jenkins.setSecurityRealm(realm);
++        realm.createAccount("admin", "initial-password");
++        j.jenkins.setInstallState(InstallState.INITIAL_PLUGINS_INSTALLING);
++        j.jenkins.setCrumbIssuer(null);
++
++        // Simulate doCreateAdminUser deleting admin before creating replacement
++        User admin = User.getById("admin", false);
++        assertNotNull(admin);
++        admin.delete();
++        // hasSomeUser() is now false — this was the exploitable moment before the fix
++
++        Page response = postCreateFirstAccount("attacker");
++
++        assertEquals(401, response.getWebResponse().getStatusCode());
++        assertNull(User.getById("attacker", false));
++    }
++
++    @Test
++    void createFirstAccountIsAllowedWhenSetupIsCompleteAndNoUsersExist() throws Exception {
++        j.jenkins.setSecurityRealm(new HudsonPrivateSecurityRealm(false, false, null));
++        j.jenkins.setCrumbIssuer(null);
++
++        Page response = postCreateFirstAccount("firstadmin");
++
++        assertEquals(200, response.getWebResponse().getStatusCode());
++        assertNotNull(User.getById("firstadmin", false));
++    }
++
++    @Test
++    void createFirstAccountIsBlockedWhenAUserAlreadyExists() throws Exception {
++        HudsonPrivateSecurityRealm realm = new HudsonPrivateSecurityRealm(false, false, null);
++        j.jenkins.setSecurityRealm(realm);
++        realm.createAccount("existingadmin", "password");
++        j.jenkins.setCrumbIssuer(null);
++
++        Page response = postCreateFirstAccount("attacker");
++
++        assertEquals(401, response.getWebResponse().getStatusCode());
++        assertNull(User.getById("attacker", false));
++    }
++}
+-- 
+2.43.0
+

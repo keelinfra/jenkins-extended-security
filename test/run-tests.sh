@@ -8,7 +8,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(cd "${1:-$here/../work}" && pwd)
-mvn_opts=(-B -ntp -Dchangelist=-k1 -Dspotbugs.skip -Dspotless.check.skip=true -Denforcer.skip
+mvn_opts=(-B -ntp -Dchangelist=-k2 -Dspotbugs.skip -Dspotless.check.skip=true -Denforcer.skip
           -Dlicense.skip=true -Dcheckstyle.skip -Dsurefire.failIfNoSpecifiedTests=false)
 
 list() { paste -sd, "$here/$1"; }

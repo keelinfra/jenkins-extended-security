@@ -1,0 +1,133 @@
+From 0ba2aaa7610be22be9a51af030a3f168a2a909d7 Mon Sep 17 00:00:00 2001
+From: gbhat618 <gbhat@cloudbees.com>
+Date: Wed, 21 Oct 2026 12:14:32 +0000
+Subject: [PATCH 33/49] [SECURITY-4123]
+
+(cherry picked from commit 76ad6bac190bd8d3fc78af44966b357938b9db2e)
+---
+ core/src/main/java/hudson/model/Slave.java    | 22 -------
+ .../java/hudson/model/Security4123Test.java   | 65 +++++++++++++++++++
+ 2 files changed, 65 insertions(+), 22 deletions(-)
+ create mode 100644 test/src/test/java/hudson/model/Security4123Test.java
+
+diff --git a/core/src/main/java/hudson/model/Slave.java b/core/src/main/java/hudson/model/Slave.java
+index 985d832f55..7d8f60c240 100644
+--- a/core/src/main/java/hudson/model/Slave.java
++++ b/core/src/main/java/hudson/model/Slave.java
+@@ -29,7 +29,6 @@ import edu.umd.cs.findbugs.annotations.CheckForNull;
+ import edu.umd.cs.findbugs.annotations.NonNull;
+ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+ import hudson.DescriptorExtensionList;
+-import hudson.EnvVars;
+ import hudson.FilePath;
+ import hudson.Launcher;
+ import hudson.Launcher.RemoteLauncher;
+@@ -242,15 +241,6 @@ public abstract class Slave extends Node implements Serializable {
+     }
+ 
+     public ComputerLauncher getLauncher() {
+-        if (launcher == null && agentCommand != null && !agentCommand.isEmpty()) {
+-            try {
+-                launcher = (ComputerLauncher) Jenkins.get().getPluginManager().uberClassLoader.loadClass("hudson.slaves.CommandLauncher").getConstructor(String.class, EnvVars.class).newInstance(agentCommand, null);
+-                agentCommand = null;
+-                save();
+-            } catch (Exception x) {
+-                LOGGER.log(Level.WARNING, "could not update historical agentCommand setting to CommandLauncher", x);
+-            }
+-        }
+         return launcher == null ? new JNLPLauncher() : launcher;
+     }
+ 
+@@ -739,18 +729,6 @@ public abstract class Slave extends Node implements Serializable {
+     }
+ 
+ 
+-//
+-// backward compatibility
+-//
+-    /**
+-     * Command line to launch the agent, like
+-     * "ssh myagent java -jar /path/to/hudson-remoting.jar"
+-     * @deprecated in 1.216
+-     */
+-    @Deprecated
+-    @XStreamDeserializable
+-    private transient String agentCommand; // this was called 'agentCommand' from the beginning; not an accidental 2016 rename
+-
+     /**
+      * Obtains the clock difference between this side and that side of the channel.
+      *
+diff --git a/test/src/test/java/hudson/model/Security4123Test.java b/test/src/test/java/hudson/model/Security4123Test.java
+new file mode 100644
+index 0000000000..35a532ffc9
+--- /dev/null
++++ b/test/src/test/java/hudson/model/Security4123Test.java
+@@ -0,0 +1,65 @@
++package hudson.model;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.hasItem;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.hamcrest.Matchers.not;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import hudson.slaves.JNLPLauncher;
++import java.util.logging.Level;
++import jenkins.model.Jenkins;
++import org.htmlunit.HttpMethod;
++import org.htmlunit.WebRequest;
++import org.htmlunit.WebResponse;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.LogRecorder;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++class Security4123Test {
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    @Test
++    @Issue("SECURITY-4123")
++    void legacyAgentCommandIsNotMigratedToCommandLauncher() throws Exception {
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        var mockAuthorizationStrategy = new MockAuthorizationStrategy();
++        mockAuthorizationStrategy.grant(Jenkins.READ, Computer.CREATE).everywhere().to("attacker");
++        j.jenkins.setAuthorizationStrategy(mockAuthorizationStrategy);
++
++        var xml = """
++                <slave>
++                    <name>evil-agent</name>
++                    <remoteFS>/tmp/evil-agent</remoteFS>
++                    <numExecutors>1</numExecutors>
++                    <mode>NORMAL</mode>
++                    <agentCommand>touch /tmp/poc-ran</agentCommand>
++                </slave>
++                """;
++
++        try (var logging = new LogRecorder().record(Slave.class, Level.WARNING).capture(10);
++             var wc = j.createWebClient().login("attacker")) {
++            var request = new WebRequest(wc.createCrumbedUrl("computer/createItem?name=evil-agent"), HttpMethod.POST);
++            request.setAdditionalHeader("Content-Type", "application/xml");
++            request.setRequestBody(xml);
++            WebResponse rsp = wc.getPage(request).getWebResponse();
++            assertEquals(200, rsp.getStatusCode());
++            assertThat(logging.getMessages(), not(hasItem(containsString("agentCommand"))));
++        }
++
++        var agent = (Slave) j.jenkins.getNode("evil-agent");
++        assertThat(agent.getLauncher(), instanceOf(JNLPLauncher.class));
++    }
++}
+-- 
+2.43.0
+
