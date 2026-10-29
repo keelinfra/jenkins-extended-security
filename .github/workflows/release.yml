@@ -1,0 +1,127 @@
+name: Release
+
+# Manual only. Builds the WAR from this branch on a fresh runner, checks it is
+# byte-identical to the WAR CI built for the same commit, attests it and opens a
+# DRAFT GitHub Release. Nothing is public until someone publishes the draft.
+#
+# GitHub lists a workflow that only has workflow_dispatch in the Actions tab
+# only when it is on the default branch, so main carries this copy. Run it with
+# a stable-* branch selected: GitHub then uses that branch's copy of the file.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SYFT_VERSION: 1.54.1
+  SYFT_SHA256: c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
+
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/heads/stable-')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write      # draft release
+      actions: read        # CI artifact of the same commit
+      id-token: write      # provenance attestation
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require green CI on this commit
+        id: ci
+        run: |
+          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            --branch "$GITHUB_REF_NAME" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$run" ]; then
+            echo "::error::No successful CI run on this branch for $GITHUB_SHA. Release only a commit CI has passed."
+            exit 1
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - run: ./build.sh
+
+      - name: Same WAR as CI built
+        run: |
+          gh run download "${{ steps.ci.outputs.run }}" -R "$GITHUB_REPOSITORY" -n jenkins-war -D ci
+          (cd work && sha256sum -c ../ci/sha256sums.txt)
+
+      - name: Version and tag
+        id: version
+        run: |
+          version=$(unzip -p work/jenkins.war META-INF/MANIFEST.MF | tr -d '\r' | sed -n 's/^Jenkins-Version: //p')
+          case "$version" in
+            2.*-k[0-9]*) ;;
+            *) echo "::error::Unexpected WAR version '$version'"; exit 1 ;;
+          esac
+          if gh release view "$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $version already exists. Bump JENKINS_SUFFIX in build.sh for a new build."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: SBOM of the WAR (CycloneDX, Syft from its own release, checksum verified)
+        run: |
+          cd "$RUNNER_TEMP"
+          tgz=syft_${SYFT_VERSION}_linux_amd64.tar.gz
+          curl -fsSLO "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/$tgz"
+          echo "$SYFT_SHA256  $tgz" | sha256sum -c
+          tar xzf "$tgz" syft
+          ./syft scan "file:$GITHUB_WORKSPACE/work/jenkins.war" -q \
+            -o "cyclonedx-json=$GITHUB_WORKSPACE/work/jenkins.war.cdx.json"
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: work/jenkins.war
+
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: work/jenkins.war
+          sbom-path: work/jenkins.war.cdx.json
+
+      - name: Draft release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          advisories=$(sed -n 's/^## \(20[0-9-]*\)$/\1/p' COVERAGE.md | paste -sd, - | sed 's/,/, /g')
+          sha=$(cut -d' ' -f1 work/sha256sums.txt)
+          cat > notes.md <<EOF
+          > Not an official Jenkins release. It is not covered by Jenkins security advisories, CVE assignments or the Jenkins security team.
+
+          Jenkins 2.541.3 with the core security fixes from the ${advisories} advisories. Each fix, its upstream commit and any change from upstream are in [COVERAGE.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/COVERAGE.md). Plugins are not patched.
+
+          Built from \`${BRANCH}\` at ${GITHUB_SHA}. The build is reproducible: \`./build.sh\` on that commit, with the JDK and Maven in \`build-info.txt\`, gives the same WAR.
+
+          \`\`\`
+          ${sha}  jenkins.war
+          \`\`\`
+
+          Check the WAR:
+
+          \`\`\`sh
+          sha256sum -c sha256sums.txt
+          gh attestation verify jenkins.war --repo ${GITHUB_REPOSITORY}
+          \`\`\`
+          EOF
+          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "$VERSION" --notes-file notes.md \
+            work/jenkins.war work/jenkins.war.cdx.json work/sha256sums.txt work/build-info.txt
+          echo "Draft release $VERSION created. Review it on the Releases page and publish it there." >> "$GITHUB_STEP_SUMMARY"
