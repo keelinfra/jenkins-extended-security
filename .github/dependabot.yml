@@ -3,6 +3,9 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     target-branch: stable-2.541
+    labels:
+      - dependencies
+      - "line: 2.541"
     schedule:
       interval: weekly
     # Skip releases younger than a week: a hijacked release is usually
