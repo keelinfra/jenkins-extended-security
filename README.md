@@ -41,6 +41,17 @@ Patched builds never reuse an upstream version, so a build can't pull unpatched 
 | Remoting | `3352.k2541.1` |
 | Stapler | `2050.k2541.1` |
 
+## Download
+
+Each [release](../../releases) has `jenkins.war`, its CycloneDX SBOM, `sha256sums.txt` and `build-info.txt`. Check the WAR before you use it:
+
+```sh
+sha256sum -c sha256sums.txt
+gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
+```
+
+Or build it yourself (below): the same commit, with the JDK and Maven listed in `build-info.txt`, gives the same WAR.
+
 ## Build
 
 Needs git, JDK 17 or 21, Maven 3.9+ and access to github.com and repo.jenkins-ci.org. Tested with OpenJDK 21.0.12 and Maven 3.9.11.
@@ -81,14 +92,7 @@ gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
 
 ## Release
 
-There are no releases yet. [`release.yml`](.github/workflows/release.yml) is ready for when one is needed. It runs only by hand (Actions → Release → Run workflow on a `stable-*` branch) and:
-
-- refuses a commit without a green CI run,
-- rebuilds the WAR on a fresh runner and checks it is byte-identical to the one CI built,
-- attests build provenance and the SBOM,
-- creates a **draft** release named after the WAR version (for example `2.541.3-k2`) with the WAR, SBOM, `sha256sums.txt` and `build-info.txt`.
-
-Nothing is public until someone publishes the draft. The CI artifact it compares against is kept for 30 days, so release within 30 days of the commit, or run CI again by hand first (Actions → CI → Run workflow).
+Releases are made by hand with [`release.yml`](.github/workflows/release.yml) (Actions → Release → Run workflow on a `stable-*` branch). It refuses a commit without a green CI run, rebuilds the WAR on a fresh runner and checks it is byte-identical to the CI build, attests provenance and the SBOM, and creates a draft release for review. The CI build it compares against is kept for 30 days; after that, run CI again by hand first.
 
 ## Security
 
