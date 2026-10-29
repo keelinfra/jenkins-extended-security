@@ -79,6 +79,17 @@ Builds from pushes get [build provenance and SBOM attestations](https://docs.git
 gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
 ```
 
+## Release
+
+There are no releases yet. [`release.yml`](.github/workflows/release.yml) is ready for when one is needed. It runs only by hand (Actions → Release → Run workflow on a `stable-*` branch) and:
+
+- refuses a commit without a green CI run,
+- rebuilds the WAR on a fresh runner and checks it is byte-identical to the one CI built,
+- attests build provenance and the SBOM,
+- creates a **draft** release named after the WAR version (for example `2.541.3-k2`) with the WAR, SBOM, `sha256sums.txt` and `build-info.txt`.
+
+Nothing is public until someone publishes the draft. The CI artifact it compares against is kept for 30 days, so release within 30 days of the commit, or run CI again by hand first (Actions → CI → Run workflow).
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for where to report problems.
