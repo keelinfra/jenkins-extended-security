@@ -23,7 +23,7 @@ Each line lives on its own branch, with the patches, a build script and tests. N
 
 | Line | Base | Java | Branch | Covers advisories up to |
 | --- | --- | --- | --- | --- |
-| 2.541.x | 2.541.3, the last LTS on Java 17 | 17 | [`stable-2.541`](../../tree/stable-2.541) | 2026-09-02 |
+| 2.541.x | 2.541.3, the last LTS on Java 17 | 17 | [`stable-2.541`](../../tree/stable-2.541) | 2026-10-28 |
 
 Only Jenkins core, Remoting and Stapler are patched. Plugins are not.
 
