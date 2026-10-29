@@ -100,8 +100,6 @@ jobs:
           advisories=$(sed -n 's/^## \(20[0-9-]*\)$/\1/p' COVERAGE.md | paste -sd, - | sed 's/,/, /g')
           sha=$(cut -d' ' -f1 work/sha256sums.txt)
           cat > notes.md <<EOF
-          > Not an official Jenkins release. It is not covered by Jenkins security advisories, CVE assignments or the Jenkins security team.
-
           Jenkins 2.541.3 with the core security fixes from the ${advisories} advisories. Each fix, its upstream commit and any change from upstream are in [COVERAGE.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/COVERAGE.md). Plugins are not patched.
 
           Built from \`${BRANCH}\` at ${GITHUB_SHA}. The build is reproducible: \`./build.sh\` on that commit, with the JDK and Maven in \`build-info.txt\`, gives the same WAR.
