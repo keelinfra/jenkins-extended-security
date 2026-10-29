@@ -41,6 +41,17 @@ Patched builds never reuse an upstream version, so a build can't pull unpatched 
 | Remoting | `3352.k2541.1` |
 | Stapler | `2050.k2541.1` |
 
+## Download
+
+Each [release](../../releases) has `jenkins.war`, its CycloneDX SBOM, `sha256sums.txt` and `build-info.txt`. Check the WAR before you use it:
+
+```sh
+sha256sum -c sha256sums.txt
+gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
+```
+
+Or build it yourself (below): the same commit, with the JDK and Maven listed in `build-info.txt`, gives the same WAR.
+
 ## Build
 
 Needs git, JDK 17 or 21, Maven 3.9+ and access to github.com and repo.jenkins-ci.org. Tested with OpenJDK 21.0.12 and Maven 3.9.11.
