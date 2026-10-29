@@ -1,0 +1,140 @@
+From 09282acac64dd9771beaf186e91e654e593cef71 Mon Sep 17 00:00:00 2001
+From: gbhat618 <gbhat@cloudbees.com>
+Date: Wed, 21 Oct 2026 12:14:26 +0000
+Subject: [PATCH 32/49] [SECURITY-4249]
+
+(cherry picked from commit eefe8c41480b4b7947b335cbe24e8a34124176ae)
+---
+ .../java/hudson/util/FormFillFailure.java     |  3 +
+ .../jenkins/security/ClassFilterImpl.java     |  5 ++
+ .../util/FormFillFailureSecurity4249Test.java | 58 +++++++++++++++++++
+ .../jenkins/security/ClassFilterImplTest.java | 13 +++++
+ 4 files changed, 79 insertions(+)
+ create mode 100644 test/src/test/java/hudson/util/FormFillFailureSecurity4249Test.java
+
+diff --git a/core/src/main/java/hudson/util/FormFillFailure.java b/core/src/main/java/hudson/util/FormFillFailure.java
+index 946d3f8997..13b0d854ef 100644
+--- a/core/src/main/java/hudson/util/FormFillFailure.java
++++ b/core/src/main/java/hudson/util/FormFillFailure.java
+@@ -187,6 +187,9 @@ public abstract class FormFillFailure extends IOException implements HttpRespons
+         rsp.setContentType("text/html;charset=UTF-8");
+         rsp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+         rsp.setHeader("X-Jenkins-Select-Error", selectionCleared ? "clear" : "retain");
++        if (FormValidation.APPLY_CONTENT_SECURITY_POLICY_HEADERS) {
++            rsp.setHeader("Content-Security-Policy", "sandbox; default-src 'none';");
++        }
+         rsp.getWriter().print(renderHtml());
+     }
+ 
+diff --git a/core/src/main/java/jenkins/security/ClassFilterImpl.java b/core/src/main/java/jenkins/security/ClassFilterImpl.java
+index 70c37c4c94..617309aeef 100644
+--- a/core/src/main/java/jenkins/security/ClassFilterImpl.java
++++ b/core/src/main/java/jenkins/security/ClassFilterImpl.java
+@@ -57,6 +57,7 @@ import jenkins.util.SystemProperties;
+ import org.apache.commons.io.IOUtils;
+ import org.kohsuke.accmod.Restricted;
+ import org.kohsuke.accmod.restrictions.NoExternalUse;
++import org.kohsuke.stapler.HttpResponse;
+ 
+ /**
+  * Customized version of {@link ClassFilter#DEFAULT}.
+@@ -151,6 +152,10 @@ public class ClassFilterImpl extends ClassFilter {
+                 return false;
+             }
+             if (Throwable.class.isAssignableFrom(c)) {
++                if (HttpResponse.class.isAssignableFrom(c)) {
++                    notifyRejected(_c, name, String.format("Rejecting %s Throwable implementing HttpResponse during remote deserialization", name));
++                    return true;
++                }
+                 LOGGER.log(Level.FINE, "permitting {0} since it is a throwable", name);
+                 return false;
+             }
+diff --git a/test/src/test/java/hudson/util/FormFillFailureSecurity4249Test.java b/test/src/test/java/hudson/util/FormFillFailureSecurity4249Test.java
+new file mode 100644
+index 0000000000..032e7d1102
+--- /dev/null
++++ b/test/src/test/java/hudson/util/FormFillFailureSecurity4249Test.java
+@@ -0,0 +1,58 @@
++package hudson.util;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import hudson.model.UnprotectedRootAction;
++import org.htmlunit.WebResponse;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.TestExtension;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++import org.kohsuke.stapler.HttpResponse;
++
++@WithJenkins
++class FormFillFailureSecurity4249Test {
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    @Test
++    @Issue("SECURITY-4249")
++    void cspHeaderIsPresent() throws Exception {
++        JenkinsRule.WebClient wc = j.createWebClient();
++        wc.getOptions().setThrowExceptionOnFailingStatusCode(false);
++        WebResponse response = wc.goTo("security4249").getWebResponse();
++        assertEquals(500, response.getStatusCode());
++        assertThat(response.getResponseHeaderValue("Content-Security-Policy"), containsString("sandbox; default-src 'none';"));
++    }
++
++    @TestExtension
++    public static class TestAction implements UnprotectedRootAction {
++        @Override
++        public String getIconFileName() {
++            return null;
++        }
++
++        @Override
++        public String getDisplayName() {
++            return null;
++        }
++
++        @Override
++        public String getUrlName() {
++            return "security4249";
++        }
++
++        public HttpResponse doIndex() {
++            return FormFillFailure.error("test error");
++        }
++    }
++}
+diff --git a/test/src/test/java/jenkins/security/ClassFilterImplTest.java b/test/src/test/java/jenkins/security/ClassFilterImplTest.java
+index 7b9e56180f..accd668e5b 100644
+--- a/test/src/test/java/jenkins/security/ClassFilterImplTest.java
++++ b/test/src/test/java/jenkins/security/ClassFilterImplTest.java
+@@ -175,4 +175,17 @@ class ClassFilterImplTest {
+         }
+     }
+ 
++    @Test
++    void throwableImplementingHttpResponseIsRejected() {
++        ClassFilterImpl filter = new ClassFilterImpl();
++        assertEquals(true, filter.isBlacklisted(hudson.util.FormFillFailure.class));
++        assertEquals(true, filter.isBlacklisted(org.kohsuke.stapler.HttpRedirect.class));
++    }
++
++    @Test
++    void plainThrowableIsAllowed() {
++        ClassFilterImpl filter = new ClassFilterImpl();
++        assertEquals(false, filter.isBlacklisted(IOException.class));
++    }
++
+ }
+-- 
+2.43.0
+

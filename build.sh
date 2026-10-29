@@ -15,7 +15,7 @@ STAPLER_TAG=2050.v425108fd5089       # the Stapler 2.541.3 ships
 # stock 2.541.3 so scanners and bug reports can tell the two apart.
 REMOTING_VERSION=3352.k2541.1
 STAPLER_VERSION=2050.k2541.1
-JENKINS_SUFFIX=-k1                   # WAR version becomes 2.541.3-k1
+JENKINS_SUFFIX=-k2                   # WAR version becomes 2.541.3-k2
 
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mkdir -p "${1:-$here/work}" && cd "${1:-$here/work}" && pwd)

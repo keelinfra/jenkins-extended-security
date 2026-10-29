@@ -3,3 +3,9 @@ UtilTest
 DescribableListTest
 IdStrategyTest
 Security3657Test
+FilePathTest
+RobustReflectionConverterTest
+XStream2Test
+Security4125Test
+PersistedListTest
+CopyOnWriteListTest

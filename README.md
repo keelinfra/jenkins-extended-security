@@ -12,7 +12,7 @@
 [![CI](https://github.com/keelinfra/jenkins-extended-security/actions/workflows/ci.yml/badge.svg?branch=stable-2.541)](https://github.com/keelinfra/jenkins-extended-security/actions/workflows/ci.yml?query=branch%3Astable-2.541)
 [![Base](https://img.shields.io/badge/base-Jenkins%202.541.3-blue)](#whats-in-it)
 [![Controller Java](https://img.shields.io/badge/controller%20Java-17%20%7C%2021-blue)](#test)
-[![Advisories](https://img.shields.io/badge/advisories-up%20to%202026--09--02-blue)](COVERAGE.md)
+[![Advisories](https://img.shields.io/badge/advisories-up%20to%202026--10--28-blue)](COVERAGE.md)
 [![License: MIT, BSD-2-Clause parts](https://img.shields.io/badge/license-MIT%20%2B%20BSD--2--Clause%20parts-green)](#license)
 
 Patches that apply the core security fixes released after Jenkins 2.541.3 to 2.541.3, the last LTS that runs on Java 17, plus a script to build the WAR from them.
@@ -23,11 +23,11 @@ This is the 2.541.x line. The [main branch](../../tree/main) lists all lines.
 
 ## What's in it
 
-- [`patches/jenkins`](patches/jenkins): 31 patches on tag `jenkins-2.541.3`. 0001 to 0030 are security fixes and their adaptations; `0031` is a test-only backport that makes `QueueTest` stable in CI.
+- [`patches/jenkins`](patches/jenkins): 49 patches on tag `jenkins-2.541.3`. 0001 to 0030 and 0032 to 0049 are security fixes and their adaptations; `0031` is a test-only backport that makes `QueueTest` stable in CI.
 - [`patches/remoting`](patches/remoting): 1 patch on Remoting `3352.v17a_fb_4b_2773f`, the version 2.541.3 ships.
 - [`patches/stapler`](patches/stapler): 5 patches on Stapler `2050.v425108fd5089`, the version 2.541.3 ships. Four are security fixes; `0005` is a build fix that makes the WAR reproducible (see below).
 
-They cover the 25 core issues from the 2026-06-10, 2026-08-05 and 2026-09-02 advisories. [COVERAGE.md](COVERAGE.md) lists each issue, its upstream commit, and where the backport differs from upstream.
+They cover the 40 core issues from the 2026-06-10, 2026-08-05, 2026-09-02 and 2026-10-28 advisories. [COVERAGE.md](COVERAGE.md) lists each issue, its upstream commit, and where the backport differs from upstream.
 
 Plugins are not patched. Update them as usual: most plugin security fixes since 2.541.3 still install on it, but a growing number need a newer core.
 
@@ -37,7 +37,7 @@ Patched builds never reuse an upstream version, so a build can't pull unpatched 
 
 | Component | Version |
 | --- | --- |
-| Jenkins WAR | `2.541.3-k1` |
+| Jenkins WAR | `2.541.3-k2` |
 | Remoting | `3352.k2541.1` |
 | Stapler | `2050.k2541.1` |
 

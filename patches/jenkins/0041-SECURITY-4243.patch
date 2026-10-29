@@ -1,0 +1,149 @@
+From 0d48f9eeec2faf5d677643ccd810bae6adee1ac9 Mon Sep 17 00:00:00 2001
+From: Daniel Beck <daniel-beck@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 12:15:31 +0000
+Subject: [PATCH 41/49] [SECURITY-4243]
+
+(cherry picked from commit 4a3fc8d3b35e0170a0edc1b831f3e4f9b5506c78)
+---
+ .../main/java/hudson/slaves/OfflineCause.java | 22 ------------------
+ .../hudson/model/ComputerSessionTest.java     | 23 +++++++++++--------
+ .../jenkins/security/Security3972Test.java    | 16 -------------
+ 3 files changed, 14 insertions(+), 47 deletions(-)
+
+diff --git a/core/src/main/java/hudson/slaves/OfflineCause.java b/core/src/main/java/hudson/slaves/OfflineCause.java
+index 0993c94bd7..cd44999e65 100644
+--- a/core/src/main/java/hudson/slaves/OfflineCause.java
++++ b/core/src/main/java/hudson/slaves/OfflineCause.java
+@@ -29,11 +29,8 @@ import edu.umd.cs.findbugs.annotations.NonNull;
+ import hudson.Util;
+ import hudson.model.Computer;
+ import hudson.model.User;
+-import java.io.ObjectStreamException;
+-import java.util.Collections;
+ import jenkins.agents.IOfflineCause;
+ import jenkins.model.Jenkins;
+-import jenkins.security.XStreamDeserializable;
+ import org.jvnet.localizer.Localizable;
+ import org.kohsuke.accmod.Restricted;
+ import org.kohsuke.accmod.restrictions.NoExternalUse;
+@@ -140,9 +137,6 @@ public abstract class OfflineCause implements IOfflineCause {
+      * @since 1.551
+      */
+     public static class UserCause extends SimpleOfflineCause {
+-        @Deprecated
+-        @XStreamDeserializable
+-        private transient User user;
+         // null when unknown
+         private /*final*/ @CheckForNull String userId;
+ 
+@@ -172,22 +166,6 @@ public abstract class OfflineCause implements IOfflineCause {
+             return Util.escape(message);
+         }
+ 
+-        // Storing the User in a filed was a mistake, switch to userId
+-        private Object readResolve() throws ObjectStreamException {
+-            if (user != null) {
+-                String id = user.getId();
+-                if (id != null) {
+-                    userId = id;
+-                } else {
+-                    // The user field is not properly deserialized so id may be missing. Look the user up by fullname
+-                    User user = User.get(this.user.getFullName(), true, Collections.emptyMap());
+-                    userId = user.getId();
+-                }
+-                this.user = null;
+-            }
+-            return this;
+-        }
+-
+         @Override
+         @NonNull
+         public String getComputerIcon() {
+diff --git a/test/src/test/java/hudson/model/ComputerSessionTest.java b/test/src/test/java/hudson/model/ComputerSessionTest.java
+index 56e34fb552..22a454ca67 100644
+--- a/test/src/test/java/hudson/model/ComputerSessionTest.java
++++ b/test/src/test/java/hudson/model/ComputerSessionTest.java
+@@ -1,10 +1,14 @@
+ package hudson.model;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
+-import static org.hamcrest.Matchers.containsString;
+-import static org.hamcrest.Matchers.hasProperty;
++import static org.hamcrest.Matchers.empty;
++import static org.hamcrest.Matchers.equalTo;
++import static org.hamcrest.Matchers.instanceOf;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.not;
+ import static org.hamcrest.Matchers.nullValue;
+ 
++import hudson.slaves.OfflineCause;
+ import java.util.logging.Level;
+ import jenkins.model.Nodes;
+ import org.junit.jupiter.api.Test;
+@@ -24,14 +28,15 @@ class ComputerSessionTest {
+     void failToLoadNodeWithSerializedUserCause() throws Throwable {
+         try (LogRecorder recorder = new LogRecorder().record(Nodes.class, Level.WARNING).capture(5)) {
+             j.then(j -> {
+-                assertThat(j.jenkins.getComputer("deserialized"), nullValue());
++                final Computer node = j.jenkins.getComputer("deserialized");
++                assertThat(node, not(nullValue()));
++                final OfflineCause cause = node.getOfflineCause();
++                assertThat(cause, instanceOf(OfflineCause.UserCause.class));
++                assertThat(((OfflineCause.UserCause) cause).getUser(), is(User.getUnknown()));
++                assertThat(cause.getReason(), equalTo("msg"));
++                assertThat(cause.toString(), equalTo("Disconnected by username : msg"));
+             });
+-            assertThat(recorder, LogRecorder.recorded(
+-                    containsString("could not load"),
+-                    hasProperty("cause",
+-                            hasProperty("message",
+-                                    containsString("Refusing to unmarshal PersistenceRoot subtype 'hudson.model.User' into field 'user' in 'hudson.slaves.OfflineCause$UserCause'. " +
+-                                            "PersistenceRoot objects are document roots and must not appear as nested field values.")))));
++            assertThat(recorder.getMessages(), empty());
+         }
+     }
+ }
+diff --git a/test/src/test/java/jenkins/security/Security3972Test.java b/test/src/test/java/jenkins/security/Security3972Test.java
+index 2ae9abc88d..6119d356fd 100644
+--- a/test/src/test/java/jenkins/security/Security3972Test.java
++++ b/test/src/test/java/jenkins/security/Security3972Test.java
+@@ -6,7 +6,6 @@ import static org.hamcrest.Matchers.is;
+ import static org.hamcrest.Matchers.nullValue;
+ import static org.hamcrest.Matchers.sameInstance;
+ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+-import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.jvnet.hudson.test.LogRecorder.recorded;
+ 
+ import hudson.model.FreeStyleProject;
+@@ -21,7 +20,6 @@ import java.net.URI;
+ import java.util.logging.Level;
+ import jenkins.model.Jenkins;
+ import jenkins.model.RunAction2;
+-import jenkins.util.xstream.CriticalXStreamException;
+ import org.htmlunit.HttpMethod;
+ import org.htmlunit.Page;
+ import org.htmlunit.WebRequest;
+@@ -145,20 +143,6 @@ class Security3972Test {
+                 holder.run, nullValue());
+     }
+ 
+-    @Test
+-    @Issue("SECURITY-3908")
+-    void userCauseReadResolveGadgetMustNotCreateUser(JenkinsRule j) throws Exception {
+-        String username = "security3908user";
+-        String xml = "<hudson.slaves.OfflineCause_-UserCause>"
+-                + "<user><fullName>" + username + "</fullName></user>"
+-                + "</hudson.slaves.OfflineCause_-UserCause>";
+-
+-        final CriticalXStreamException ex = assertThrows(CriticalXStreamException.class, () -> Jenkins.XSTREAM2.fromXML(xml));
+-        assertThat(ex.getMessage(), containsString(
+-                "Refusing to unmarshal PersistenceRoot subtype 'hudson.model.User' into field 'user' in 'hudson.slaves.OfflineCause$UserCause'. PersistenceRoot objects are document roots and must not appear as nested field values."));
+-        assertThat(User.get(username, false), nullValue());
+-    }
+-
+     static class Holder {
+         public Run<?, ?> run;
+     }
+-- 
+2.43.0
+

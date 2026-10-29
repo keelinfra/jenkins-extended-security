@@ -1,0 +1,122 @@
+From 2920d87cc5a5ab9d632af93b5d6c32863995d5f7 Mon Sep 17 00:00:00 2001
+From: gbhat618 <gbhat@cloudbees.com>
+Date: Wed, 21 Oct 2026 12:15:04 +0000
+Subject: [PATCH 39/49] [SECURITY-4237]
+
+(cherry picked from commit 3e9af7eabc2f13fd303e197f226c09b84f6be0b8)
+---
+ .../hudson/model/DirectoryBrowserSupport.java |  3 +-
+ .../DirectoryBrowserSupportSEC4237Test.java   | 87 +++++++++++++++++++
+ 2 files changed, 89 insertions(+), 1 deletion(-)
+ create mode 100644 test/src/test/java/hudson/model/DirectoryBrowserSupportSEC4237Test.java
+
+diff --git a/core/src/main/java/hudson/model/DirectoryBrowserSupport.java b/core/src/main/java/hudson/model/DirectoryBrowserSupport.java
+index 07be207fc0..29d608b067 100644
+--- a/core/src/main/java/hudson/model/DirectoryBrowserSupport.java
++++ b/core/src/main/java/hudson/model/DirectoryBrowserSupport.java
+@@ -205,7 +205,8 @@ public final class DirectoryBrowserSupport implements HttpResponse {
+ 
+     private void serveFile(StaplerRequest2 req, StaplerResponse2 rsp, VirtualFile root, String icon, boolean serveDirIndex) throws IOException, ServletException, InterruptedException {
+         String path = getPath(req);
+-        if (path.replace('\\', '/').contains("/../")) {
++        String slashedPath = path.replace('\\', '/');
++        if (slashedPath.contains("/../") || slashedPath.endsWith("/..")) {
+             // don't serve anything other than files in the artifacts dir
+             rsp.sendError(HttpServletResponse.SC_BAD_REQUEST);
+             return;
+diff --git a/test/src/test/java/hudson/model/DirectoryBrowserSupportSEC4237Test.java b/test/src/test/java/hudson/model/DirectoryBrowserSupportSEC4237Test.java
+new file mode 100644
+index 0000000000..29b499f315
+--- /dev/null
++++ b/test/src/test/java/hudson/model/DirectoryBrowserSupportSEC4237Test.java
+@@ -0,0 +1,87 @@
++package hudson.model;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.not;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import java.io.File;
++import java.net.HttpURLConnection;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import jenkins.model.Jenkins;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.jvnet.hudson.test.Issue;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.MockAuthorizationStrategy;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++class DirectoryBrowserSupportSEC4237Test {
++
++    private JenkinsRule j;
++
++    @BeforeEach
++    void setUp(JenkinsRule rule) {
++        j = rule;
++    }
++
++    private JenkinsRule.WebClient getWebClient() {
++        var wc = j.createWebClient();
++        wc.getOptions().setJavaScriptEnabled(false);
++        return wc;
++    }
++
++    @Issue("SECURITY-4237")
++    @Test
++    void backslashDotDot_cannotEscapeWorkspaceRoot() throws Exception {
++        var pubjob = j.createFreeStyleProject("pubjob");
++        var hiddenjob = j.createFreeStyleProject("hiddenjob");
++        j.buildAndAssertSuccess(pubjob);
++        j.buildAndAssertSuccess(hiddenjob);
++
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ).everywhere().to("wsuser")
++                .grant(Item.READ, Item.WORKSPACE).onItems(pubjob).to("wsuser"));
++
++        try (var wc = getWebClient().withBasicCredentials("wsuser")) {
++            wc.getOptions().setThrowExceptionOnFailingStatusCode(false);
++
++            var hiddenJobDirect = wc.goTo(hiddenjob.getUrl(), null);
++            assertEquals(HttpURLConnection.HTTP_NOT_FOUND, hiddenJobDirect.getWebResponse().getStatusCode());
++
++            var baseline = wc.goTo(pubjob.getUrl() + "ws/", null);
++            assertEquals(HttpURLConnection.HTTP_OK, baseline.getWebResponse().getStatusCode());
++            assertThat(baseline.getWebResponse().getContentAsString(), not(containsString("hiddenjob")));
++
++            var attack = wc.goTo(pubjob.getUrl() + "ws/%5C../", null);
++            assertThat(attack.getWebResponse().getContentAsString(), not(containsString("hiddenjob")));
++            assertEquals(HttpURLConnection.HTTP_BAD_REQUEST, attack.getWebResponse().getStatusCode());
++        }
++    }
++
++    @Issue("SECURITY-4237")
++    @Test
++    void backslashDotDot_cannotEscapeUserContentRoot() throws Exception {
++        var canary = "canary-" + System.nanoTime() + ".txt";
++        Files.writeString(new File(j.jenkins.getRootDir(), canary).toPath(), "root-level file, not under userContent", StandardCharsets.UTF_8);
++
++        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
++        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
++                .grant(Jenkins.READ).everywhere().to("reader"));
++
++        try (var wc = getWebClient().withBasicCredentials("reader")) {
++            wc.getOptions().setThrowExceptionOnFailingStatusCode(false);
++
++            var baseline = wc.goTo("userContent/", null);
++            assertEquals(HttpURLConnection.HTTP_OK, baseline.getWebResponse().getStatusCode());
++            assertThat(baseline.getWebResponse().getContentAsString(), not(containsString(canary)));
++
++            var attack = wc.goTo("userContent/%5C../", null);
++            assertThat(attack.getWebResponse().getContentAsString(), not(containsString(canary)));
++            assertEquals(HttpURLConnection.HTTP_BAD_REQUEST, attack.getWebResponse().getStatusCode());
++        }
++    }
++}
+-- 
+2.43.0
+
