@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - run: shellcheck build.sh test/*.sh
+      - run: shellcheck build.sh docker/*.sh test/*.sh
 
   build:
     runs-on: ubuntu-24.04
@@ -159,3 +159,27 @@ jobs:
             work/boot-*/*.log
             work/boot-*/smoke-console.txt
           retention-days: 7
+
+  image:
+    # The Docker image the daily image workflow on main publishes, built from this WAR
+    # (amd64 only here) and checked against the official image's layout and plugin boot.
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: jenkins-war
+          path: work
+      - run: docker/build.sh work/jenkins.war work/docker
+      - name: Build
+        run: |
+          mapfile -t args < <(sed 's/^/--build-arg=/' work/docker/build-args)
+          docker build "${args[@]}" -f work/docker/context/debian/Dockerfile -t es:ci work/docker/context
+      - run: test/image-smoke.sh es:ci "$(sed -n 's/^JENKINS_VERSION=//p' work/docker/build-args)"
+      - name: Plugin boot inside the image (its JDK and its WAR)
+        run: |
+          docker run --rm -v "$PWD/test:/test:ro" --entrypoint bash es:ci \
+            /test/plugin-boot.sh /usr/share/jenkins/jenkins.war /test/plugins-top100.txt /tmp/boot

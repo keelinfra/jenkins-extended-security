@@ -52,6 +52,23 @@ gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
 
 Or build it yourself (below): the same commit, with the JDK and Maven listed in `build-info.txt`, gives the same WAR.
 
+### Docker image
+
+`ghcr.io/keelinfra/jenkins` is built from the Dockerfile of the official `jenkins/jenkins:2.541.3-lts-jdk17` image, with this WAR, on the current Debian 13 and Temurin 17. Not an official Jenkins image. It runs the same way: same user, paths, entrypoint and `jenkins-plugin-cli`, so an existing `JENKINS_HOME` volume and a Dockerfile `FROM jenkins/jenkins:2.541.3-lts-jdk17` keep working when you change the image name. For amd64 and arm64.
+
+| Tag | Points to |
+| --- | --- |
+| `2.541.3-k2` | that release, rebuilt when Debian or Temurin ship updates |
+| `2.541.3-k2-YYYYMMDD` | one build of it, never changes |
+| `2.541` | the latest release of the line |
+
+```sh
+docker pull ghcr.io/keelinfra/jenkins:2.541
+gh attestation verify oci://ghcr.io/keelinfra/jenkins:2.541 --repo keelinfra/jenkins-extended-security
+```
+
+A daily [workflow](../../actions/workflows/image.yml) on `main` builds it from the latest release WAR with [`docker/build.sh`](docker/build.sh), which applies [`docker/patches`](docker/patches) to the upstream Dockerfile. It rebuilds only when the release, the Debian image, Temurin or `docker/` changed, and publishes only after `test/image-smoke.sh` and `test/plugin-boot.sh` pass on both platforms.
+
 ## Build
 
 Needs git, JDK 17 or 21, Maven 3.9+ and access to github.com and repo.jenkins-ci.org. Tested with OpenJDK 21.0.12 and Maven 3.9.11.
@@ -83,6 +100,7 @@ Every push and pull request to a `stable-*` branch runs [CI](.github/workflows/c
 - A second build on a fresh runner without the Maven cache. Its sha256 must match the first.
 - `test/run-tests.sh` on JDK 17 and 21.
 - `test/war-diff.sh` and `test/plugin-boot.sh`, on the stock 2.541.3 WAR and on ours, with Java 17 and 21 as the controller JVM. Both must get the same plugin versions.
+- The Docker image (amd64): `test/image-smoke.sh` checks it against the official image's layout and that `jenkins-plugin-cli` works, and `test/plugin-boot.sh` runs inside it.
 
 Builds from pushes get [build provenance and SBOM attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations). The WAR stays a workflow artifact for 30 days so you can compare it with your own build. It is not a release. To check a WAR from CI:
 
