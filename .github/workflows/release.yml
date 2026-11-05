@@ -112,6 +112,8 @@ jobs:
           ${sha}  jenkins.war
           \`\`\`
 
+          Docker image: \`ghcr.io/keelinfra/jenkins:${VERSION}\`, published within a day of this release.
+
           Check the WAR:
 
           \`\`\`sh

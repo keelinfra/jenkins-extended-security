@@ -19,7 +19,7 @@ Jenkins core security fixes, backported to the last LTS line that runs on each J
 
 ## Lines
 
-Each line lives on its own branch, with the patches, a build script and tests. Each release has the WAR, its SBOM and checksums; you can also build the WAR from source with the line's `build.sh` and get the same file.
+Each line lives on its own branch, with the patches, a build script and tests. Each release has the WAR, its SBOM and checksums, and a Docker image; you can also build the WAR from source with the line's `build.sh` and get the same file.
 
 | Line | Base | Java | Branch | Latest release | Covers advisories up to |
 | --- | --- | --- | --- | --- | --- |
@@ -42,20 +42,24 @@ gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
 
 | Jenkins installed with | WAR to replace |
 | --- | --- |
-| Docker image `jenkins/jenkins` | `/usr/share/jenkins/jenkins.war` |
+| Docker image `jenkins/jenkins` | none, use the image below |
 | deb or rpm package | `/usr/share/java/jenkins.war` |
 | `java -jar jenkins.war` | the file you start |
 
 ### Docker
 
-Build your own image on top of the official one:
+Change the image name. `ghcr.io/keelinfra/jenkins` is built from the official image's Dockerfile, with the release WAR, on the current Debian 13 and Temurin, and runs the same way: same user, paths, entrypoint and `jenkins-plugin-cli`. Your `JENKINS_HOME` volume stays as it is. For amd64 and arm64.
 
-```dockerfile
-FROM jenkins/jenkins:2.541.3-lts-jdk17
-COPY --chown=root:root jenkins.war /usr/share/jenkins/jenkins.war
+```sh
+docker pull ghcr.io/keelinfra/jenkins:2.541
+gh attestation verify oci://ghcr.io/keelinfra/jenkins:2.541 --repo keelinfra/jenkins-extended-security
 ```
 
-Only the WAR changes. The JDK and OS packages in that base image are the ones it was built with in March 2026, so keep them patched yourself.
+| Official image | This image |
+| --- | --- |
+| `jenkins/jenkins:2.541.3-lts-jdk17` | `ghcr.io/keelinfra/jenkins:2.541` (latest release), `:2.541.3-k2` (that release), `:2.541.3-k2-YYYYMMDD` (one build, never changes) |
+
+`2.541` and `2.541.3-k2` are rebuilt when Debian or Temurin ship updates. In a Dockerfile, `FROM ghcr.io/keelinfra/jenkins:2.541` replaces `FROM jenkins/jenkins:2.541.3-lts-jdk17`.
 
 ### deb or rpm
 

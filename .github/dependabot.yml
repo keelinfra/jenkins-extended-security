@@ -16,3 +16,17 @@ updates:
       github-actions:
         patterns:
           - "*"
+  # main's own workflows (image.yml, the release.yml copy)
+  - package-ecosystem: github-actions
+    directory: /
+    labels:
+      - dependencies
+      - ci
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"
