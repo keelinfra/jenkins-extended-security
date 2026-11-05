@@ -24,6 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  DOCKER_BUILD_RECORD_UPLOAD: false   # no build record artifacts from build-push-action
   IMAGE: ghcr.io/keelinfra/jenkins
   LINE: '2.541'
   BRANCH: stable-2.541
@@ -50,6 +51,11 @@ jobs:
         with:
           ref: ${{ env.BRANCH }}
           persist-credentials: false
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
       - name: What would go into the image
         id: plan
         env:
@@ -65,7 +71,6 @@ jobs:
             | jq -r '.versions[0].semver' | tr + _)
           files=$(find docker -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
           inputs=$(printf '%s\n' "$tag" "$war_sha" "$debian" "$java" "$files" | sha256sum | cut -d' ' -f1)
-          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin > /dev/null
           current=$(docker buildx imagetools inspect "$IMAGE:$LINE" --format '{{json .Image}}' 2>/dev/null \
             | jq -r '(."linux/amd64" // .).config.Labels["io.keelinfra.inputs"] // empty' || true)
           build=true
@@ -110,29 +115,46 @@ jobs:
           DEBIAN_VERSION: ${{ needs.plan.outputs.debian }}
           JAVA_VERSION: ${{ needs.plan.outputs.java }}
         run: docker/build.sh work/jenkins.war work/docker
-      - name: Build
+      - name: Build args
+        id: args
         run: |
-          docker buildx create --use --name es > /dev/null
-          mapfile -t args < <(sed 's/^/--build-arg=/' work/docker/build-args)
-          docker buildx build "${args[@]}" --platform "${{ matrix.platform }}" \
-            --label "io.keelinfra.inputs=${{ needs.plan.outputs.inputs }}" \
-            -f work/docker/context/debian/Dockerfile -t es:test --load work/docker/context
+          { echo 'list<<EOF'; cat work/docker/build-args; echo EOF; } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: work/docker/context
+          file: work/docker/context/debian/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ steps.args.outputs.list }}
+          labels: io.keelinfra.inputs=${{ needs.plan.outputs.inputs }}
+          tags: es:test
+          load: true
       - run: test/image-smoke.sh es:test "${TAG}"
       - name: Plugin boot inside the image
         run: |
           docker run --rm -v "$PWD/test:/test:ro" --entrypoint bash es:test \
             /test/plugin-boot.sh /usr/share/jenkins/jenkins.war /test/plugins-top100.txt /tmp/boot
-      - name: Push by digest
-        run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin > /dev/null
-          mapfile -t args < <(sed 's/^/--build-arg=/' work/docker/build-args)
-          docker buildx build "${args[@]}" --platform "${{ matrix.platform }}" \
-            --label "io.keelinfra.inputs=${{ needs.plan.outputs.inputs }}" \
-            -f work/docker/context/debian/Dockerfile --provenance=false \
-            --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" \
-            --metadata-file work/metadata.json work/docker/context
-          digest=$(jq -r '."containerimage.digest"' work/metadata.json)
-          mkdir -p work/digests && touch "work/digests/${digest#sha256:}"
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Push by digest (same build, from the cache)
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: work/docker/context
+          file: work/docker/context/debian/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ steps.args.outputs.list }}
+          labels: io.keelinfra.inputs=${{ needs.plan.outputs.inputs }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: mkdir -p work/digests && touch "work/digests/${DIGEST#sha256:}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: digest-${{ strategy.job-index }}
@@ -156,10 +178,14 @@ jobs:
           pattern: digest-*
           merge-multiple: true
           path: digests
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
       - name: Tag the multi-platform image
         id: index
         run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin > /dev/null
           refs=(); for f in digests/*; do refs+=("$IMAGE@sha256:$(basename "$f")"); done
           docker buildx imagetools create \
             -t "$IMAGE:$TAG" -t "$IMAGE:$TAG-${{ needs.plan.outputs.date }}" -t "$IMAGE:$LINE" "${refs[@]}"
