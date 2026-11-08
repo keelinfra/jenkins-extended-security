@@ -2,7 +2,7 @@
 
 Core issues from the Jenkins security advisories published after 2.541.3, and where each fix comes from. Upstream commits are in [jenkinsci/jenkins](https://github.com/jenkinsci/jenkins), [jenkinsci/remoting](https://github.com/jenkinsci/remoting) and [jenkinsci/stapler](https://github.com/jenkinsci/stapler).
 
-Plugin issues are not covered. Install the fixed plugin versions; most of them still install on 2.541.3.
+Plugin issues are not covered; see [Plugins](#plugins) for the ones whose fix does not install on 2.541.x.
 
 ## 2026-06-10
 
@@ -66,6 +66,23 @@ Plugin issues are not covered. Install the fixed plugin versions; most of them s
 | SECURITY-4249 | CVE-2026-117622 | jenkins/0032 | eefe8c4148 | |
 
 Not included: the third-party updates in 2.580.2 (handlebars 4.7.10, Jetty 12.1.14 through Winstone). They are not in the advisory and have not been checked against 2.541.x yet.
+
+## Plugins
+
+Most plugin fixes published since 2.541.3 still install on it: update those plugins as usual. The fixes below need a newer core, so on 2.541.x the newest version you can install is still affected. Update center data from 2026-11-08, plugins with a published fix only.
+
+| Plugin | Installs | Newest on 2.541.x | Issue | CVE | Advisory | Fixed in | Needs core |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| workflow-multibranch | 220,908 | 841.vec5b_9e1806ec | SECURITY-3729, exposure of System-scoped credentials | CVE-2026-92130 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-3729) | 842.v3a_b_59b_57b_e6e | 2.555.3 |
+| pipeline-groovy-lib | 195,050 | 798.v5cc688825312 | SECURITY-3815, CSRF | CVE-2026-84663 | [2026-09-02](https://www.jenkins.io/security/advisory/2026-09-02/#SECURITY-3815) | 805.va_fc79344957d | 2.555.1 |
+| pipeline-groovy-lib | | | SECURITY-3796, path traversal | CVE-2026-92131 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-3796) | 806.v408277b_33d1d | 2.555.1 |
+| warnings-ng | 18,389 | 13.10085.v94a_d6ca_82b_f6 | SECURITY-3937, stored XSS | CVE-2026-92134 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-3937) | 13.10223.10225.vcf001b_b_b_3a_90 | 2.555.3 |
+| coverage | 16,940 | 2.3139.v731d2e83ea_8a_ | SECURITY-4118, stored XSS | CVE-2026-92135 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-4118) | 3.3325.3327.v26c59e218691 | 2.555.3 |
+| azure-ad | 5,423 | 678.vf350db_9b_563a_ | SECURITY-3935, privilege escalation | CVE-2026-84672 | [2026-09-02](https://www.jenkins.io/security/advisory/2026-09-02/#SECURITY-3935) | 711.v34046f788fd7 | 2.555.3 |
+| customizable-header | 5,192 | 295.v2544b_ca_19b_97 | SECURITY-4104, improper access control leads to XSS | CVE-2026-84673 | [2026-09-02](https://www.jenkins.io/security/advisory/2026-09-02/#SECURITY-4104) | 330.v8a_8d87511ea_1 | 2.555.3 |
+| bitbucket-push-and-pull-request | 4,303 | 3.4.0 | SECURITY-3980, SSRF that can capture credentials | CVE-2026-92139 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-3980) | 4.1.0 | 2.555.3 |
+
+Jenkins shows these warnings on 2.541.x and keeps showing them. A plugin rebuilt here with the fix would show them too, because the update center's warning applies to every version on that plugin line, so this project does not ship plugins. The way off them is a core that runs on Java 21 (2.555.1 or later). If you depend on one of these plugins and cannot move yet, open an issue.
 
 ## Patches that are not security fixes
 
