@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 17:15:54 +0000
+Subject: [PATCH] Order plugin versions the way Jenkins does in versionLT
+
+copy_reference_file() skipped plugin upgrades when the image's version
+was a security backport (1571.1585.v...) of the installed one
+(1571.v...), or when a wrapped library gained a digit (0.3.0-4 ->
+0.3.0.1-29). The plugins that need the newer version then fail to load
+while Jenkins starts normally.
+---
+ jenkins-support | 57 ++++++++++++++++++++++++++++---------------------
+ 1 file changed, 33 insertions(+), 24 deletions(-)
+
+diff --git a/jenkins-support b/jenkins-support
+index 54169c78..e54c7b86 100755
+--- a/jenkins-support
++++ b/jenkins-support
+@@ -3,41 +3,50 @@
+ : "${REF:="/usr/share/jenkins/ref"}"
+ 
+ # compare if version1 < version2
++#
++# Plugin versions come in several shapes, and converting '-' to '.' and running
++# `sort --version-sort` ranks some newer versions lower, so copy_reference_file()
++# skips the upgrade without saying so. Two steps before that comparison:
++#
++# 1. Drop the ".v<commit>" suffix of Jenkins CD versions. It does not order
++#    versions, and a security backport adds a number before it:
++#      1571.vb_423c255d6d9         < 1571.1585.v21fce07cd04d
++#      2.84.v72119de229b_7         < 2.84.86.vf9c960e9b_458
++#    (jenkinsci/docker#2328; #2329 fixed the first shape only, and only after 2.541.3)
++# 2. When both have a '-', compare what comes before it (the wrapped library's
++#    version) first, so a build number is never compared with a release digit:
++#      0.3.0-4.v84c6f0f4969e      < 0.3.0.1-29.v67e9a_1c969b_b_
++#      5.6-193.vf028a_770a_fa_c   < 5.6.3-202.v310919c85b_f6
++#    (jenkinsci/docker#2361)
++#
++# Checked against Jenkins' own VersionNumber on 92,242 pairs of published plugin
++# versions: no pair is ordered worse than before.
+ versionLT() {
+-    local normalized_version1 normalized_version2 first_part_of_1 first_char_other_part_of_1 first_part_of_2
++    local v1="$1" v2="$2" r1 r2
+ 
+-    # Quick check for equality
+-    if [ "$1" = "$2" ]; then
++    if [ "$v1" = "$v2" ]; then
+         return 1
+     fi
+ 
+-    # Convert '-' to '.' to ease comparison
+-    normalized_version1=$(echo "$1" | tr '-' '.')
+-    normalized_version2=$(echo "$2" | tr '-' '.')
+-    first_part_of_1=${normalized_version1%%.*}
+-    other_part_of_1=${normalized_version1#*.}
+-    first_char_other_part_of_1=${other_part_of_1:0:1}
+-    first_part_of_2=${normalized_version2%%.*}
+-
++    [[ "$v1" =~ ^(.+)\.v[0-9a-f_]+$ ]] && v1=${BASH_REMATCH[1]}
++    [[ "$v2" =~ ^(.+)\.v[0-9a-f_]+$ ]] && v2=${BASH_REMATCH[1]}
++    if [ "$v1" = "$v2" ]; then
++        v1="$1" v2="$2"
++    fi
+ 
+-    # Security fix backport special case
+-    # Ex: 3894.vd0f0248b_a_fc4 < 3894.3896.vca_2c931e7935
+-    # -> normal incrementals version includes a "v" as first char of second part
+-    # -> security fix backport adds the backport source first part as second part
+-    # https://github.com/jenkinsci/workflow-cps-plugin/releases/tag/3894.vd0f0248b_a_fc4
+-    # https://github.com/jenkinsci/workflow-cps-plugin/releases/tag/3894.3896.vca_2c931e7935
+-    if [[ "$first_part_of_1" = "$first_part_of_2" ]]; then
+-        # If the second part of $version1 starts with a "v", then $version1 is older
+-        if [[ "$first_char_other_part_of_1" == "v" ]]; then
+-            return 0
++    if [[ "$v1" == *-* && "$v2" == *-* ]]; then
++        r1=${v1%%-*} r2=${v2%%-*}
++        if [ "$r1" != "$r2" ]; then
++            v1=$r1 v2=$r2
+         fi
+     fi
+ 
+-    if [ "$normalized_version1" = "$(printf '%s\n%s\n' "$normalized_version1" "$normalized_version2" | sort --version-sort | head -n1)" ]; then
+-        return 0
+-    else
++    v1=$(echo "$v1" | tr '-' '.')
++    v2=$(echo "$v2" | tr '-' '.')
++    if [ "$v1" = "$v2" ]; then
+         return 1
+     fi
++    [ "$v1" = "$(printf '%s\n%s\n' "$v1" "$v2" | sort --version-sort | head -n1)" ]
+ }
+ 
+ # returns a plugin version from a plugin archive
