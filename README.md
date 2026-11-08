@@ -29,7 +29,7 @@ This is the 2.541.x line. The [main branch](../../tree/main) lists all lines.
 
 They cover the 40 core issues from the 2026-06-10, 2026-08-05, 2026-09-02 and 2026-10-28 advisories. [COVERAGE.md](COVERAGE.md) lists each issue, its upstream commit, and where the backport differs from upstream.
 
-Plugins are not patched. Update them as usual: most plugin security fixes since 2.541.3 still install on it, but a growing number need a newer core.
+Plugins are not patched. Update them as usual: most plugin security fixes since 2.541.3 still install on it, but a growing number need a newer core ([list](COVERAGE.md#plugins)).
 
 ## Versions
 
