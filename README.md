@@ -69,6 +69,23 @@ gh attestation verify oci://ghcr.io/keelinfra/jenkins:2.541 --repo keelinfra/jen
 
 A daily [workflow](../../actions/workflows/image.yml) on `main` builds it from the latest release WAR with [`docker/build.sh`](docker/build.sh), which applies [`docker/patches`](docker/patches) to the upstream Dockerfile. It rebuilds only when the release, the Debian image, Temurin or `docker/` changed, and publishes only after `test/image-smoke.sh` and `test/plugin-boot.sh` pass on both platforms.
 
+#### Plugins in an image built from this one
+
+If your Dockerfile installs plugins with `jenkins-plugin-cli` and starts on an existing `JENKINS_HOME` volume, the entrypoint copies a plugin only when the image's version is newer than the one in the volume. The stock 2.541.3 image compares some versions wrongly and keeps the older plugin without saying so. Jenkins then starts, but the plugins that need the newer one do not load. It happens with security backports (`1571.vb_423c255d6d9` kept over `1571.1585.v21fce07cd04d`) and with library plugins whose library gained a digit (`0.3.0-4.v84c6f0f4969e` kept over `0.3.0.1-29.v67e9a_1c969b_b_`). Checked against Jenkins' own version comparison on the published plugin versions, the 2.541.3 script skipped upgrades between releases since 2024 for 22 of the 300 most used plugins. This image orders versions the way Jenkins does ([`docker/patches/0002`](docker/patches)); upstream fixed part of it after 2.541.3 ([jenkinsci/docker#2328](https://github.com/jenkinsci/docker/issues/2328)), and [#2361](https://github.com/jenkinsci/docker/issues/2361) is still open.
+
+After an upgrade, check that the volume has the plugin versions the image carries:
+
+```sh
+docker exec CONTAINER bash -c 'cd "$REF/plugins" && for f in *.jpi *.jpi.override; do
+  [ -e "$f" ] || continue; p=${f%.override}
+  want=$(unzip -p "$f" META-INF/MANIFEST.MF | tr -d "\r" | sed -n "s/^Plugin-Version: //p")
+  got=$(unzip -p "$JENKINS_HOME/plugins/$p" META-INF/MANIFEST.MF 2>/dev/null | tr -d "\r" | sed -n "s/^Plugin-Version: //p")
+  [ "$got" = "$want" ] || echo "MISMATCH ${p%.jpi}: image $want, JENKINS_HOME ${got:-missing}"
+done; echo checked'
+```
+
+A mismatch is expected only for a plugin someone updated in the UI after the image installed it; the entrypoint keeps that one on purpose. `copy_reference_file.log` in `JENKINS_HOME` says why each plugin was copied or skipped. To make the image's plugins always win over the volume, rename them to `*.jpi.override` in your Dockerfile.
+
 ## Build
 
 Needs git, JDK 17 or 21, Maven 3.9+ and access to github.com and repo.jenkins-ci.org. Tested with OpenJDK 21.0.12 and Maven 3.9.11.
@@ -100,7 +117,7 @@ Every push and pull request to a `stable-*` branch runs [CI](.github/workflows/c
 - A second build on a fresh runner without the Maven cache. Its sha256 must match the first.
 - `test/run-tests.sh` on JDK 17 and 21.
 - `test/war-diff.sh` and `test/plugin-boot.sh`, on the stock 2.541.3 WAR and on ours, with Java 17 and 21 as the controller JVM. Both must get the same plugin versions.
-- The Docker image (amd64): `test/image-smoke.sh` checks it against the official image's layout and that `jenkins-plugin-cli` works, and `test/plugin-boot.sh` runs inside it.
+- The Docker image (amd64): `test/image-smoke.sh` checks it against the official image's layout, that `jenkins-plugin-cli` works and that the entrypoint upgrades plugins on an existing `JENKINS_HOME`, and `test/plugin-boot.sh` runs inside it.
 
 Builds from pushes get [build provenance and SBOM attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations). The WAR stays a workflow artifact for 30 days so you can compare it with your own build. It is not a release. To check a WAR from CI:
 
