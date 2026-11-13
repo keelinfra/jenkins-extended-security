@@ -23,9 +23,10 @@ This is the 2.541.x line. The [main branch](../../tree/main) lists all lines.
 
 ## What's in it
 
-- [`patches/jenkins`](patches/jenkins): 49 patches on tag `jenkins-2.541.3`. 0001 to 0030 and 0032 to 0049 are security fixes and their adaptations; `0031` is a test-only backport that makes `QueueTest` stable in CI.
+- [`patches/jenkins`](patches/jenkins): 50 patches on tag `jenkins-2.541.3`. 0001 to 0030 and 0032 to 0049 are security fixes and their adaptations; `0031` is a test-only backport that makes `QueueTest` stable in CI; `0050` points core at the Winstone below.
 - [`patches/remoting`](patches/remoting): 1 patch on Remoting `3352.v17a_fb_4b_2773f`, the version 2.541.3 ships.
 - [`patches/stapler`](patches/stapler): 5 patches on Stapler `2050.v425108fd5089`, the version 2.541.3 ships. Four are security fixes; `0005` is a build fix that makes the WAR reproducible (see below).
+- Winstone, the launcher that bundles Jetty: `build.sh` rebuilds `8.1029.vd3071f6b_5988`, the version 2.541.3 ships, with Jetty 12.1.15 instead of 12.1.5. Newer Winstone releases have the newer Jetty but are compiled for Java 21; Winstone's own code has not changed since 8.1029. [COVERAGE.md](COVERAGE.md#jetty) lists the Jetty advisories this fixes.
 
 They cover the 40 core issues from the 2026-06-10, 2026-08-05, 2026-09-02 and 2026-10-28 advisories. [COVERAGE.md](COVERAGE.md) lists each issue, its upstream commit, and where the backport differs from upstream.
 
@@ -37,9 +38,10 @@ Patched builds never reuse an upstream version, so a build can't pull unpatched 
 
 | Component | Version |
 | --- | --- |
-| Jenkins WAR | `2.541.3-k2` |
+| Jenkins WAR | `2.541.3-k3` |
 | Remoting | `3352.k2541.1` |
 | Stapler | `2050.k2541.1` |
+| Winstone | `8.1029.k2541.1` (Jetty 12.1.15) |
 
 ## Download
 
@@ -58,8 +60,8 @@ Or build it yourself (below): the same commit, with the JDK and Maven listed in 
 
 | Tag | Points to |
 | --- | --- |
-| `2.541.3-k2` | that release, rebuilt when Debian or Temurin ship updates |
-| `2.541.3-k2-YYYYMMDD` | one build of it, never changes |
+| `2.541.3-k3` | that release, rebuilt when Debian or Temurin ship updates |
+| `2.541.3-k3-YYYYMMDD` | one build of it, never changes |
 | `2.541` | the latest release of the line |
 
 ```sh
@@ -94,7 +96,7 @@ Needs git, JDK 17 or 21, Maven 3.9+ and access to github.com and repo.jenkins-ci
 ./build.sh    # output: work/jenkins.war, work/sha256sums.txt, work/build-info.txt
 ```
 
-`build.sh` clones the three upstream tags, applies the patches with `git am`, builds and installs Remoting and Stapler under the versions above, then builds the WAR against them. The build is reproducible: the same patches and tool versions give a byte-identical WAR, so anyone can rebuild it and compare `sha256sums.txt`. Getting there took two changes. `build.sh` applies the patches with fixed committer dates, because the WAR records the commit id. And Stapler patch `0005` fixes its annotation processor, which skipped some `.stapler` files depending on HashSet order (upstream Stapler still has this; it has no effect at runtime because Jenkins reads parameter names via reflection).
+`build.sh` clones the three upstream tags, applies the patches with `git am`, builds and installs Remoting, Stapler and Winstone under the versions above, then builds the WAR against them. The build is reproducible: the same patches and tool versions give a byte-identical WAR, so anyone can rebuild it and compare `sha256sums.txt`. Getting there took two changes. `build.sh` applies the patches with fixed committer dates, because the WAR records the commit id. And Stapler patch `0005` fixes its annotation processor, which skipped some `.stapler` files depending on HashSet order (upstream Stapler still has this; it has no effect at runtime because Jenkins reads parameter names via reflection).
 
 ## Test
 
