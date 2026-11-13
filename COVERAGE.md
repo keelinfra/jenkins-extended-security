@@ -65,7 +65,22 @@ Plugin issues are not covered; see [Plugins](#plugins) for the ones whose fix do
 | SECURITY-4248 | CVE-2026-117617 | jenkins/0036 | e0e2fd474f | |
 | SECURITY-4249 | CVE-2026-117622 | jenkins/0032 | eefe8c4148 | |
 
-Not included: the third-party updates in 2.580.2 (handlebars 4.7.10, Jetty 12.1.14 through Winstone). They are not in the advisory and have not been checked against 2.541.x yet.
+Not included: the handlebars 4.7.10 update in 2.580.2. It is not in the advisory and has not been checked against 2.541.x yet. Jetty is updated separately, see [Jetty](#jetty).
+
+## Jetty
+
+2.541.3 ships Winstone `8.1029.vd3071f6b_5988` with Jetty 12.1.5. Vulnerability scanners report the Jetty advisories below against it. Builds from `2.541.3-k3` use Winstone `8.1029.k2541.1`, the same Winstone code rebuilt with Jetty 12.1.15 (`build.sh`, `jenkins/0050`). Upstream Jenkins moved to Jetty 12.1.13 in 2.580.1 and 12.1.14 in 2.580.2.
+
+Advisories that [OSV](https://osv.dev) lists for the Jetty jars inside 2.541.3's `winstone.jar`, checked 2026-11-13. It lists none for the same jars at 12.1.15. Whether each issue can be reached in the way Jenkins configures Jetty has not been checked; the update is there so the code is fixed either way and scanners agree.
+
+| Advisory | CVE | Severity | Fixed in Jetty | Summary |
+| --- | --- | --- | --- | --- |
+| [GHSA-xxh7-fcf3-rj7f](https://github.com/advisories/GHSA-xxh7-fcf3-rj7f) | CVE-2026-1605 | High | 12.1.6 | Gzip request memory leak |
+| [GHSA-355h-qmc2-wpwf](https://github.com/advisories/GHSA-355h-qmc2-wpwf) | CVE-2026-2332 | High | 12.1.7 | HTTP request smuggling via chunked extension quoted-string parsing |
+| [GHSA-7p3p-8qv8-m2vh](https://github.com/advisories/GHSA-7p3p-8qv8-m2vh) | CVE-2026-6790 | Moderate | 12.1.9 | HTTP Authority/Host mismatch |
+| [GHSA-w7x5-g22v-xqhr](https://github.com/advisories/GHSA-w7x5-g22v-xqhr) | CVE-2026-8384 | Moderate | 12.1.9 | Path parameter traversal |
+| [GHSA-2fvj-hgj9-j2gr](https://github.com/advisories/GHSA-2fvj-hgj9-j2gr) | CVE-2026-10050 | High | 12.1.10 | Digest authentication: lossy ISO-8859-1 encoding allows authentication bypass |
+| [GHSA-f4v5-65jj-pcr2](https://github.com/advisories/GHSA-f4v5-65jj-pcr2) | CVE-2026-10051 | Moderate | 12.1.10 | Trailers leak across requests on HTTP/1.1 keep-alive connections |
 
 ## Plugins
 

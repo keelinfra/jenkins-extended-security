@@ -1,0 +1,45 @@
+From 0ca22c4a8e51dc03c7878d16a0e87f1c08a7e93e Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 08:57:23 +0000
+Subject: [PATCH] Use Winstone 8.1029.k2541.1 (Jetty 12.1.15)
+
+Not an upstream commit. 2.541.3 ships Winstone 8.1029.vd3071f6b_5988 with
+Jetty 12.1.5. Winstone releases with newer Jetty are compiled for Java 21,
+and Winstone's own code has not changed since 8.1029, so build.sh rebuilds
+8.1029 with Jetty 12.1.15 and installs it as 8.1029.k2541.1. This patch
+points core at that version and keeps the jetty-ee9-maven-plugin (used by
+mvn jetty:run during development only) on the same Jetty, as upstream does.
+---
+ pom.xml     | 2 +-
+ war/pom.xml | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/pom.xml b/pom.xml
+index db1db4f..d76a6f3 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -98,7 +98,7 @@ THE SOFTWARE.
+     <spotless.check.skip>false</spotless.check.skip>
+     <ban-junit4-imports.skip>false</ban-junit4-imports.skip>
+     <!-- Make sure to keep the jetty-ee9-maven-plugin version in war/pom.xml in sync with the Jetty release in Winstone: -->
+-    <winstone.version>8.1029.vd3071f6b_5988</winstone.version>
++    <winstone.version>8.1029.k2541.1</winstone.version>
+     <node.version>24.11.1</node.version>
+   </properties>
+ 
+diff --git a/war/pom.xml b/war/pom.xml
+index 5dc484c..1e530c8 100644
+--- a/war/pom.xml
++++ b/war/pom.xml
+@@ -661,7 +661,7 @@ THE SOFTWARE.
+           contains a version of Jetty that is older than this, trigger Dependabot in jenkinsci/winstone and release the
+           result before proceeding with the update here.
+         -->
+-        <version>12.1.5</version>
++        <version>12.1.15</version>
+         <configuration>
+           <!--
+             Reload webapp when you hit ENTER. (See JETTY-282 for more)
+-- 
+2.43.0
+
