@@ -23,7 +23,7 @@ Each line lives on its own branch, with the patches, a build script and tests. E
 
 | Line | Base | Java | Branch | Latest release | Covers advisories up to |
 | --- | --- | --- | --- | --- | --- |
-| 2.541.x | 2.541.3, the last LTS on Java 17 | 17 | [`stable-2.541`](../../tree/stable-2.541) | [`2.541.3-k2`](../../releases/tag/2.541.3-k2) | 2026-10-28 |
+| 2.541.x | 2.541.3, the last LTS on Java 17 | 17 | [`stable-2.541`](../../tree/stable-2.541) | [`2.541.3-k3`](../../releases/tag/2.541.3-k3) | 2026-10-28 |
 
 Only Jenkins core, Remoting and Stapler are patched. Plugins are not.
 
@@ -36,8 +36,8 @@ The release WAR replaces the `jenkins.war` of a Jenkins already on the line's ba
 Download and check the WAR:
 
 ```sh
-curl -fLO https://github.com/keelinfra/jenkins-extended-security/releases/download/2.541.3-k2/jenkins.war
-curl -fLO https://github.com/keelinfra/jenkins-extended-security/releases/download/2.541.3-k2/sha256sums.txt
+curl -fLO https://github.com/keelinfra/jenkins-extended-security/releases/download/2.541.3-k3/jenkins.war
+curl -fLO https://github.com/keelinfra/jenkins-extended-security/releases/download/2.541.3-k3/sha256sums.txt
 sha256sum -c sha256sums.txt
 gh attestation verify jenkins.war --repo keelinfra/jenkins-extended-security
 ```
@@ -59,9 +59,9 @@ gh attestation verify oci://ghcr.io/keelinfra/jenkins:2.541 --repo keelinfra/jen
 
 | Official image | This image |
 | --- | --- |
-| `jenkins/jenkins:2.541.3-lts-jdk17` | `ghcr.io/keelinfra/jenkins:2.541` (latest release), `:2.541.3-k2` (that release), `:2.541.3-k2-YYYYMMDD` (one build, never changes) |
+| `jenkins/jenkins:2.541.3-lts-jdk17` | `ghcr.io/keelinfra/jenkins:2.541` (latest release), `:2.541.3-k3` (that release), `:2.541.3-k3-YYYYMMDD` (one build, never changes) |
 
-`2.541` and `2.541.3-k2` are rebuilt when Debian or Temurin ship updates. In a Dockerfile, `FROM ghcr.io/keelinfra/jenkins:2.541` replaces `FROM jenkins/jenkins:2.541.3-lts-jdk17`.
+`2.541` and `2.541.3-k3` are rebuilt when Debian or Temurin ship updates. In a Dockerfile, `FROM ghcr.io/keelinfra/jenkins:2.541` replaces `FROM jenkins/jenkins:2.541.3-lts-jdk17`.
 
 ### deb or rpm
 
@@ -80,7 +80,7 @@ Hold the package, or the next package upgrade puts back an upstream WAR.
 The `X-Jenkins` header and the version in the page footer show the patched version:
 
 ```sh
-curl -sI http://localhost:8080/login | grep X-Jenkins    # X-Jenkins: 2.541.3-k2
+curl -sI http://localhost:8080/login | grep X-Jenkins    # X-Jenkins: 2.541.3-k3
 ```
 
 Jenkins will still say a newer version is available. If Manage Jenkins offers to upgrade automatically, don't: that downloads the upstream WAR, which needs Java 21.
