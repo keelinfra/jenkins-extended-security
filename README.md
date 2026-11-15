@@ -27,6 +27,8 @@ Each line lives on its own branch, with the patches, a build script and tests. E
 
 Only Jenkins core, Remoting and Stapler are patched. Plugins are not.
 
+What each line promises, and what it doesn't do, is in [PROMISES.md](PROMISES.md).
+
 ## Install
 
 The release WAR replaces the `jenkins.war` of a Jenkins already on the line's base version (2.541.3 for 2.541.x). `JENKINS_HOME`, plugins and jobs stay as they are. Back up `JENKINS_HOME` first, as for any upgrade.
