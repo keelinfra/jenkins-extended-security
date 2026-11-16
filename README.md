@@ -15,6 +15,8 @@
 
 Jenkins core security fixes, backported to the last LTS line that runs on each Java version, for controllers that can't move to a newer Java yet.
 
+Jenkins 2.541.3 is the last LTS that runs on Java 17. Jenkins 2.555.1 and later need Java 21, so the core security fixes published after 2.541.3 ship only in releases a Java 17 controller can't run. The 2.541.x line here carries them; [COVERAGE.md](../../blob/stable-2.541/COVERAGE.md) lists each advisory, fix and upstream commit.
+
 > This is not an official Jenkins release. It is not covered by Jenkins security advisories, CVE assignments or the Jenkins security team. The way off an old line is to [move to a newer Java](https://www.jenkins.io/doc/book/platform-information/upgrade-java-to-21/) and the current LTS; this only covers the time until you can.
 
 ## Lines
