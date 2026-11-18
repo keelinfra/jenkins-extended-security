@@ -21,7 +21,7 @@ JETTY_VERSION=12.1.15
 REMOTING_VERSION=3352.k2541.1
 STAPLER_VERSION=2050.k2541.1
 WINSTONE_VERSION=8.1029.k2541.1
-JENKINS_SUFFIX=-k3                   # WAR version becomes 2.541.3-k3
+JENKINS_SUFFIX=-k4                   # WAR version becomes 2.541.3-k4
 
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mkdir -p "${1:-$here/work}" && cd "${1:-$here/work}" && pwd)

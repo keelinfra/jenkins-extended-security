@@ -65,7 +65,7 @@ Plugin issues are not covered; see [Plugins](#plugins) for the ones whose fix do
 | SECURITY-4248 | CVE-2026-117617 | jenkins/0036 | e0e2fd474f | |
 | SECURITY-4249 | CVE-2026-117622 | jenkins/0032 | eefe8c4148 | |
 
-Not included: the handlebars 4.7.10 update in 2.580.2. It is not in the advisory and has not been checked against 2.541.x yet. Jetty is updated separately, see [Jetty](#jetty).
+Dependency updates for known vulnerabilities are listed separately: [Jetty](#jetty) and [Other dependencies](#other-dependencies).
 
 ## Jetty
 
@@ -81,6 +81,20 @@ Advisories that [OSV](https://osv.dev) lists for the Jetty jars inside 2.541.3's
 | [GHSA-w7x5-g22v-xqhr](https://github.com/advisories/GHSA-w7x5-g22v-xqhr) | CVE-2026-8384 | Moderate | 12.1.9 | Path parameter traversal |
 | [GHSA-2fvj-hgj9-j2gr](https://github.com/advisories/GHSA-2fvj-hgj9-j2gr) | CVE-2026-10050 | High | 12.1.10 | Digest authentication: lossy ISO-8859-1 encoding allows authentication bypass |
 | [GHSA-f4v5-65jj-pcr2](https://github.com/advisories/GHSA-f4v5-65jj-pcr2) | CVE-2026-10051 | Moderate | 12.1.10 | Trailers leak across requests on HTTP/1.1 keep-alive connections |
+
+## Other dependencies
+
+Other libraries in 2.541.3's WAR that [OSV](https://osv.dev) lists advisories for, checked 2026-11-18 (Maven jars in `WEB-INF/lib`, and the `dependencies` in `package.json`, which webpack bundles into the WAR's JavaScript). Builds from `2.541.3-k4` have the versions below. As for Jetty, whether each issue can be reached in Jenkins has not been checked.
+
+| Library | 2.541.3 | Here | Patch | Upstream | Advisories fixed |
+| --- | --- | --- | --- | --- | --- |
+| handlebars (JavaScript) | 4.7.8 | 4.7.10 | jenkins/0051 | 3aff301a4f (4.7.9), 5ad1bcfd5b (4.7.10, in 2.580.2) | 11: [GHSA-2w6w-674q-4c4q](https://github.com/advisories/GHSA-2w6w-674q-4c4q), [GHSA-8r5x-fm3f-whwj](https://github.com/advisories/GHSA-8r5x-fm3f-whwj), [GHSA-p8wg-vrv2-v86f](https://github.com/advisories/GHSA-p8wg-vrv2-v86f) (Critical); [GHSA-3mfm-83xf-c92r](https://github.com/advisories/GHSA-3mfm-83xf-c92r), [GHSA-xhpv-hc6g-r9c6](https://github.com/advisories/GHSA-xhpv-hc6g-r9c6), [GHSA-9cx6-37pm-9jff](https://github.com/advisories/GHSA-9cx6-37pm-9jff), [GHSA-xjpj-3mr7-gcpf](https://github.com/advisories/GHSA-xjpj-3mr7-gcpf) (High); [GHSA-2qvq-rjwj-gvw9](https://github.com/advisories/GHSA-2qvq-rjwj-gvw9), [GHSA-7rx3-28cr-v5wh](https://github.com/advisories/GHSA-7rx3-28cr-v5wh), [GHSA-xw65-4hp5-5hc7](https://github.com/advisories/GHSA-xw65-4hp5-5hc7) (Moderate); [GHSA-442j-39wm-28r2](https://github.com/advisories/GHSA-442j-39wm-28r2) (Low) |
+| lodash (JavaScript) | 4.17.21 | 4.18.1 | jenkins/0052 | edcf3892a8 (4.17.23), e19879e61f (4.18.1, in 2.580.2) | [GHSA-r5fr-rjxr-66jc](https://github.com/advisories/GHSA-r5fr-rjxr-66jc) (CVE-2026-4800, High), [GHSA-xxjr-mmjv-4gpg](https://github.com/advisories/GHSA-xxjr-mmjv-4gpg) (CVE-2025-13465, Moderate) |
+| Guava | 33.5.0-jre | 33.7.2-jre | jenkins/0053 | 60dfb1a413 (weekly 2.585; 2.580.2 still has 33.7.1) | [GHSA-xxph-c9ww-hj94](https://github.com/advisories/GHSA-xxph-c9ww-hj94) (CVE-2026-102554, High) |
+
+2.541.3's JavaScript imports only `lodash/debounce`, and neither lodash advisory is about that function; the update keeps the bundled copy current. Upstream made the handlebars and lodash updates in two steps each, whose `yarn.lock` changes do not apply to 2.541.3. Patches 0051 and 0052 make the same `package.json` change and regenerate `yarn.lock` with the Yarn version 2.541.3 pins (4.12.0); the resulting entries match 2.580.2's, checksums included. Guava 33.7.2 also brings jspecify 1.0.1 (was 1.0.0), an annotations-only jar; `test/war-diff.sh` expects both new jar names.
+
+Still listed by OSV and not changed here: `commons-lang` 2.6 is affected by [GHSA-j288-q9x7-2f5v](https://github.com/advisories/GHSA-j288-q9x7-2f5v) (CVE-2025-48924), which has no fixed 2.x release; upstream 2.580.2 ships the same jar. `jenkins-core` itself is matched by version number to core advisories: the 2026-03-18 ones (SECURITY-3657, SECURITY-3674) are fixed in 2.541.3 itself, and the later ones are in the tables above.
 
 ## Plugins
 
