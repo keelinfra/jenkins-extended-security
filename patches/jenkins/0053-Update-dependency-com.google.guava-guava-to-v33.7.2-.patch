@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "renovate[bot]" <29139614+renovate[bot]@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 04:51:02 -0600
+Subject: [PATCH] Update dependency com.google.guava:guava to v33.7.2-jre
+ (#27459)
+
+Signed-off-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>
+Co-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>
+
+Conflict resolved for 2.541.x: 2.541.3 has Guava 33.5.0-jre, not
+33.7.1-jre, on the changed line. 33.7.2 fixes GHSA-xxph-c9ww-hj94
+(CVE-2026-102554).
+
+(cherry picked from commit 60dfb1a4133bef0f21a9677af688301ef88d155c)
+---
+ bom/pom.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/bom/pom.xml b/bom/pom.xml
+index 10f640df68..9deb1fa595 100644
+--- a/bom/pom.xml
++++ b/bom/pom.xml
+@@ -89,7 +89,7 @@ THE SOFTWARE.
+       <dependency>
+         <groupId>com.google.guava</groupId>
+         <artifactId>guava</artifactId>
+-        <version>33.5.0-jre</version>
++        <version>33.7.2-jre</version>
+       </dependency>
+       <dependency>
+         <groupId>com.sun.xml.txw2</groupId>
+-- 
+2.43.0
+

@@ -23,7 +23,7 @@ This is the 2.541.x line. The [main branch](../../tree/main) lists all lines.
 
 ## What's in it
 
-- [`patches/jenkins`](patches/jenkins): 50 patches on tag `jenkins-2.541.3`. 0001 to 0030 and 0032 to 0049 are security fixes and their adaptations; `0031` is a test-only backport that makes `QueueTest` stable in CI; `0050` points core at the Winstone below.
+- [`patches/jenkins`](patches/jenkins): 53 patches on tag `jenkins-2.541.3`. 0001 to 0030 and 0032 to 0049 are security fixes and their adaptations; `0031` is a test-only backport that makes `QueueTest` stable in CI; `0050` points core at the Winstone below; `0051` to `0053` update handlebars, lodash and Guava, which have known vulnerabilities ([list](COVERAGE.md#other-dependencies)).
 - [`patches/remoting`](patches/remoting): 1 patch on Remoting `3352.v17a_fb_4b_2773f`, the version 2.541.3 ships.
 - [`patches/stapler`](patches/stapler): 5 patches on Stapler `2050.v425108fd5089`, the version 2.541.3 ships. Four are security fixes; `0005` is a build fix that makes the WAR reproducible (see below).
 - Winstone, the launcher that bundles Jetty: `build.sh` rebuilds `8.1029.vd3071f6b_5988`, the version 2.541.3 ships, with Jetty 12.1.15 instead of 12.1.5. Newer Winstone releases have the newer Jetty but are compiled for Java 21; Winstone's own code has not changed since 8.1029. [COVERAGE.md](COVERAGE.md#jetty) lists the Jetty advisories this fixes.
@@ -38,7 +38,7 @@ Patched builds never reuse an upstream version, so a build can't pull unpatched 
 
 | Component | Version |
 | --- | --- |
-| Jenkins WAR | `2.541.3-k3` |
+| Jenkins WAR | `2.541.3-k4` |
 | Remoting | `3352.k2541.1` |
 | Stapler | `2050.k2541.1` |
 | Winstone | `8.1029.k2541.1` (Jetty 12.1.15) |
@@ -60,8 +60,8 @@ Or build it yourself (below): the same commit, with the JDK and Maven listed in 
 
 | Tag | Points to |
 | --- | --- |
-| `2.541.3-k3` | that release, rebuilt when Debian or Temurin ship updates |
-| `2.541.3-k3-YYYYMMDD` | one build of it, never changes |
+| `2.541.3-k4` | that release, rebuilt when Debian or Temurin ship updates |
+| `2.541.3-k4-YYYYMMDD` | one build of it, never changes |
 | `2.541` | the latest release of the line |
 
 ```sh

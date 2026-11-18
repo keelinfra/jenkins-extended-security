@@ -5,14 +5,17 @@
 #   STOCK_WAR: https://get.jenkins.io/war-stable/2.541.3/jenkins.war
 #
 # Expected differences, and nothing else: the stock WAR's JENKINS.SF/JENKINS.RSA
-# signature, and the version in the names of the core, CLI, websocket, Remoting
-# and Stapler jars. Any other line means a dependency changed.
+# signature, the version in the names of the core, CLI, websocket, Remoting
+# and Stapler jars, and the Guava and jspecify versions that jenkins/0053 sets.
+# Any other line means a dependency changed.
 set -euo pipefail
 norm() {
   unzip -Z1 "$1" | sed -E \
     -e 's/-2\.541\.3(-k[0-9]+)?\.jar$/-VERSION.jar/' \
     -e 's/^(WEB-INF\/lib\/remoting)-.*\.jar$/\1-VERSION.jar/' \
     -e 's/^(WEB-INF\/lib\/stapler(-groovy|-jelly)?)-2050\..*\.jar$/\1-VERSION.jar/' \
+    -e 's/^WEB-INF\/lib\/guava-33\.(5\.0|7\.2)-jre\.jar$/WEB-INF\/lib\/guava-VERSION.jar/' \
+    -e 's/^WEB-INF\/lib\/jspecify-1\.0\.[01]\.jar$/WEB-INF\/lib\/jspecify-VERSION.jar/' \
     -e '/^META-INF\/JENKINS\.(SF|RSA)$/d' | sort
 }
 if diff <(norm "$1") <(norm "$2"); then

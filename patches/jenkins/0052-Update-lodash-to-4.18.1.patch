@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Xianpeng <3353385+shenxianpeng@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 18:12:26 +0000
+Subject: [PATCH] Update lodash to 4.18.1
+
+Not a cherry-pick: upstream made this update in two steps,
+edcf3892a8 (4.17.23, #26158) and e19879e61f (4.18.1, #26578), whose
+yarn.lock hunks do not apply to 2.541.3. Same package.json change as
+e19879e61f; yarn.lock regenerated with Yarn 4.12.0 (yarn install
+--mode=update-lockfile), and its lodash entry matches 2.580.2's, checksum
+included. 4.18.1 fixes GHSA-xxjr-mmjv-4gpg (CVE-2025-13465) and
+GHSA-r5fr-rjxr-66jc (CVE-2026-4800).
+---
+ package.json |  2 +-
+ yarn.lock    | 10 +++++-----
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/package.json b/package.json
+index c892972f11..74ce6c0260 100644
+--- a/package.json
++++ b/package.json
+@@ -56,7 +56,7 @@
+     "handlebars": "4.7.10",
+     "hotkeys-js": "3.12.2",
+     "jquery": "3.7.1",
+-    "lodash": "4.17.21",
++    "lodash": "4.18.1",
+     "sortablejs": "1.15.6",
+     "tippy.js": "6.3.7",
+     "window-handle": "1.0.1"
+diff --git a/yarn.lock b/yarn.lock
+index d378f28bf2..8ac847530b 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -4470,7 +4470,7 @@ __metadata:
+     handlebars-loader: "npm:1.7.3"
+     hotkeys-js: "npm:3.12.2"
+     jquery: "npm:3.7.1"
+-    lodash: "npm:4.17.21"
++    lodash: "npm:4.18.1"
+     mini-css-extract-plugin: "npm:2.9.4"
+     postcss: "npm:8.5.6"
+     postcss-loader: "npm:8.2.0"
+@@ -4789,10 +4789,10 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
+-"lodash@npm:4.17.21":
+-  version: 4.17.21
+-  resolution: "lodash@npm:4.17.21"
+-  checksum: 10c0/d8cbea072bb08655bb4c989da418994b073a608dffa608b09ac04b43a791b12aeae7cd7ad919aa4c925f33b48490b5cfe6c1f71d827956071dae2e7bb3a6b74c
++"lodash@npm:4.18.1":
++  version: 4.18.1
++  resolution: "lodash@npm:4.18.1"
++  checksum: 10c0/757228fc68805c59789e82185135cf85f05d0b2d3d54631d680ca79ec21944ec8314d4533639a14b8bcfbd97a517e78960933041a5af17ecb693ec6eecb99a27
+   languageName: node
+   linkType: hard
+ 
+-- 
+2.43.0
+
