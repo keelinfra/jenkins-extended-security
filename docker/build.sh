@@ -29,8 +29,12 @@ if [ -z "${DEBIAN_VERSION:-}" ]; then
     | jq -r '.results[].name' | sed -n 's/^trixie-\([0-9]\{8\}\)-slim$/\1/p' | sort | tail -1)
 fi
 if [ -z "${JAVA_VERSION:-}" ]; then
-  JAVA_VERSION=$(curl -fsSL "https://api.adoptium.net/v3/info/release_versions?release_type=ga&version=%5B17,18)&page_size=1&sort_order=DESC&vendor=eclipse" \
-    | jq -r '.versions[0].semver' | tr + _)
+  # Newest Temurin 17 with a Linux build for both x64 and aarch64. Point releases
+  # such as 17.0.21.1+2 can be x64 only.
+  JAVA_VERSION=$(for arch in x64 aarch64; do
+      curl -fsSL "https://api.adoptium.net/v3/assets/feature_releases/17/ga?os=linux&architecture=$arch&image_type=jdk&jvm_impl=hotspot&vendor=eclipse&page_size=10&sort_order=DESC" \
+        | jq -r '.[].release_name | sub("^jdk-"; "")'
+    done | sort -V | uniq -d | tail -1 | tr + _)
 fi
 case "$DEBIAN_VERSION" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) echo "bad DEBIAN_VERSION '$DEBIAN_VERSION'" >&2; exit 1 ;; esac
 case "$JAVA_VERSION" in 17.0.*_*) ;; *) echo "bad JAVA_VERSION '$JAVA_VERSION'" >&2; exit 1 ;; esac
