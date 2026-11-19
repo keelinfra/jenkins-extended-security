@@ -67,8 +67,13 @@ jobs:
           war_sha=$(gh release download "$tag" -R "$GITHUB_REPOSITORY" -p sha256sums.txt -O - | sed -n 's/  jenkins.war$//p')
           debian=$(curl -fsSL "https://hub.docker.com/v2/repositories/library/debian/tags?name=trixie-20&page_size=100" \
             | jq -r '.results[].name' | sed -n 's/^trixie-\([0-9]\{8\}\)-slim$/\1/p' | sort | tail -1)
-          java=$(curl -fsSL "https://api.adoptium.net/v3/info/release_versions?release_type=ga&version=%5B17,18)&page_size=1&sort_order=DESC&vendor=eclipse" \
-            | jq -r '.versions[0].semver' | tr + _)
+          # Newest Temurin 17 with a Linux build for both x64 and aarch64. Point releases
+          # such as 17.0.21.1+2 can be x64 only.
+          java=$(for arch in x64 aarch64; do
+              curl -fsSL "https://api.adoptium.net/v3/assets/feature_releases/17/ga?os=linux&architecture=$arch&image_type=jdk&jvm_impl=hotspot&vendor=eclipse&page_size=10&sort_order=DESC" \
+                | jq -r '.[].release_name | sub("^jdk-"; "")'
+            done | sort -V | uniq -d | tail -1 | tr + _)
+          [ -n "$java" ] || { echo "No Temurin 17 release for both x64 and aarch64" >&2; exit 1; }
           files=$(find docker -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
           inputs=$(printf '%s\n' "$tag" "$war_sha" "$debian" "$java" "$files" | sha256sum | cut -d' ' -f1)
           current=$(docker buildx imagetools inspect "$IMAGE:$LINE" --format '{{json .Image}}' 2>/dev/null \
