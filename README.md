@@ -7,9 +7,9 @@
 
 <p align="center">
   <a href="https://github.com/keelinfra/jenkins-extended-security/actions/workflows/ci.yml?query=branch%3Astable-2.541"><img alt="CI 2.541.x" src="https://img.shields.io/github/actions/workflow/status/keelinfra/jenkins-extended-security/ci.yml?branch=stable-2.541&style=flat-square&label=CI%202.541.x&labelColor=0b2239"></a>
-  <a href="https://github.com/keelinfra/jenkins-extended-security/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/keelinfra/jenkins-extended-security?style=flat-square&label=release&labelColor=0b2239&color=e8a33d"></a>
-  <a href="../../blob/stable-2.541/COVERAGE.md"><img alt="Advisories up to 2026-10-28" src="https://img.shields.io/badge/advisories-up%20to%202026--10--28-e8a33d?style=flat-square&labelColor=0b2239"></a>
-  <a href="#license"><img alt="License: MIT, BSD-2-Clause parts" src="https://img.shields.io/badge/license-MIT%20%2B%20BSD--2--Clause%20parts-e8a33d?style=flat-square&labelColor=0b2239"></a>
+  <a href="https://github.com/keelinfra/jenkins-extended-security/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/keelinfra/jenkins-extended-security?style=flat-square&label=release&labelColor=0b2239&color=b06d10"></a>
+  <a href="../../blob/stable-2.541/COVERAGE.md"><img alt="Advisories up to 2026-10-28" src="https://img.shields.io/badge/advisories-up%20to%202026--10--28-b06d10?style=flat-square&labelColor=0b2239"></a>
+  <a href="#license"><img alt="License: MIT, BSD-2-Clause parts" src="https://img.shields.io/badge/license-MIT%20%2B%20BSD--2--Clause%20parts-b06d10?style=flat-square&labelColor=0b2239"></a>
 </p>
 
 <p align="center">
