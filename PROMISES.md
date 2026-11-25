@@ -13,6 +13,18 @@ What this project promises for each line in the [README](README.md#lines), and w
 | **A current Docker image.** `ghcr.io/keelinfra/jenkins` is published within a day of each release. Debian 13 and Temurin are checked every day, and the image is rebuilt when either has an update. Each image has provenance and SBOM attestations; the SBOM is of the amd64 image. | `gh attestation verify oci://ghcr.io/keelinfra/jenkins:2.541 --repo keelinfra/jenkins-extended-security` |
 | **Private reporting.** A problem the patches cause can be reported privately. | [SECURITY.md](SECURITY.md) |
 
+## Record
+
+Each release measured against the release-timing promise. Days are calendar days from the trigger to the published release: for a Jenkins advisory, its publication date; for a dependency, the day the vulnerable version was found in the line. Newest first; every later release adds a row, including late ones.
+
+| Trigger date | Trigger | Release | Published | Days | Target |
+| --- | --- | --- | --- | --- | --- |
+| 2026-11-18 | handlebars, lodash and Guava advisories found in the 2.541.3 WAR ([Other dependencies](../../blob/stable-2.541/COVERAGE.md#other-dependencies)) | [`2.541.3-k4`](../../releases/tag/2.541.3-k4) | 2026-11-19 | 1 | 30 |
+| 2026-11-13 | Jetty 12.1.5 advisories found in 2.541.3's Winstone ([Jetty](../../blob/stable-2.541/COVERAGE.md#jetty)) | [`2.541.3-k3`](../../releases/tag/2.541.3-k3) | 2026-11-15 | 2 | 30 |
+| 2026-10-28 | [Jenkins security advisory](https://www.jenkins.io/security/advisory/2026-10-28/), 15 core issues | [`2.541.3-k2`](../../releases/tag/2.541.3-k2) | 2026-10-29 | 1 | 7 |
+
+The 2026-10-28 and 2026-11-13 rows predate this file and are measured the same way. Advisories published before 2026-10-28 were already in the line when it started, so they have no row.
+
 ## What we don't do
 
 - **No new features**, and no backports of changes from newer Jenkins that are not security fixes.
