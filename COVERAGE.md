@@ -98,10 +98,11 @@ Still listed by OSV and not changed here: `commons-lang` 2.6 is affected by [GHS
 
 ## Plugins
 
-Most plugin fixes published since 2.541.3 still install on it: update those plugins as usual. The fixes below need a newer core, so on 2.541.x the newest version you can install is still affected. Update center data from 2026-11-08, plugins with a published fix only.
+Most plugin fixes published since 2.541.3 still install on it: update those plugins as usual. The fixes below need a newer core, so on 2.541.x the newest version you can install is still affected. Update center data from 2026-11-25, plugins with a published fix only.
 
 | Plugin | Installs | Newest on 2.541.x | Issue | CVE | Advisory | Fixed in | Needs core |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| workflow-cps | 224,024 | 4400.v300cf4f6cef5 | SECURITY-4152, sandbox bypass | CVE-2026-136834 | [2026-11-25](https://www.jenkins.io/security/advisory/2026-11-25/#SECURITY-4152) | 4403.4405.va_b_cdb_b_d0b_89f | 2.568.1 |
 | workflow-multibranch | 220,908 | 841.vec5b_9e1806ec | SECURITY-3729, exposure of System-scoped credentials | CVE-2026-92130 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-3729) | 842.v3a_b_59b_57b_e6e | 2.555.3 |
 | pipeline-groovy-lib | 195,050 | 798.v5cc688825312 | SECURITY-3815, CSRF | CVE-2026-84663 | [2026-09-02](https://www.jenkins.io/security/advisory/2026-09-02/#SECURITY-3815) | 805.va_fc79344957d | 2.555.1 |
 | pipeline-groovy-lib | | | SECURITY-3796, path traversal | CVE-2026-92131 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-3796) | 806.v408277b_33d1d | 2.555.1 |
@@ -111,7 +112,9 @@ Most plugin fixes published since 2.541.3 still install on it: update those plug
 | customizable-header | 5,192 | 295.v2544b_ca_19b_97 | SECURITY-4104, improper access control leads to XSS | CVE-2026-84673 | [2026-09-02](https://www.jenkins.io/security/advisory/2026-09-02/#SECURITY-4104) | 330.v8a_8d87511ea_1 | 2.555.3 |
 | bitbucket-push-and-pull-request | 4,303 | 3.4.0 | SECURITY-3980, SSRF that can capture credentials | CVE-2026-92139 | [2026-09-16](https://www.jenkins.io/security/advisory/2026-09-16/#SECURITY-3980) | 4.1.0 | 2.555.3 |
 
-Jenkins shows these warnings on 2.541.x and keeps showing them. A plugin rebuilt here with the fix would show them too, because the update center's warning applies to every version on that plugin line, so this project does not ship plugins. The way off them is a core that runs on Java 21 (2.555.1 or later). If you depend on one of these plugins and cannot move yet, open an issue.
+Jenkins shows these warnings on 2.541.x and keeps showing them. A plugin rebuilt here with the fix would show them too, because the update center's warning applies to every version on that plugin line, so this project does not ship plugins. The way off them is a core that runs on Java 21 (2.555.1 or later; 2.568.1 for workflow-cps). If you depend on one of these plugins and cannot move yet, open an issue.
+
+Jenkins also shows the 2026-11-25 warning [SECURITY-4325](https://www.jenkins.io/security/advisory/2026-11-25/#SECURITY-4325) for warnings-ng 13.10085.v94a_d6ca_82b_f6, because the update center's warning covers every version up to the fix. The advisory says only 13.10251.va_452d3553728 and later are affected, so that version is not, and the table does not list it.
 
 ## Patches that are not security fixes
 
